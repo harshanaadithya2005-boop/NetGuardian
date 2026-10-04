@@ -1,12 +1,20 @@
 import sqlite3
+from pathlib import Path
 
-DATABASE_NAME = "netguardian.db"
+
+# Store the database inside the database folder
+DB_PATH = Path(__file__).parent / "network_monitor.db"
 
 
 def get_connection():
     """Create and return a connection to the NetGuardian database."""
-    connection = sqlite3.connect(DATABASE_NAME)
+
+    connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
+
+    # Enable SQLite foreign key support
+    connection.execute("PRAGMA foreign_keys = ON")
+
     return connection
 
 
@@ -14,7 +22,6 @@ def initialize_database():
     """Create the devices table if it does not already exist."""
 
     connection = get_connection()
-
     cursor = connection.cursor()
 
     cursor.execute("""
