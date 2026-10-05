@@ -1,12 +1,10 @@
-import sqlite3
+from database.db import get_connection
 
-connection = sqlite3.connect("netguardian.db")
-connection.row_factory = sqlite3.Row
+connection = get_connection()
+connection.row_factory = get_connection().row_factory
 
 cursor = connection.cursor()
-
 cursor.execute("SELECT * FROM devices")
-
 devices = cursor.fetchall()
 
 print("Devices currently stored in NetGuardian:")

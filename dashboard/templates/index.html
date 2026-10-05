@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+
+{% block content %}
+<!-- Metric Cards -->
+<section class="stats-grid">
+    <div class="card stat-card">
+        <div class="stat-icon icon-devices"><i class="fa-solid fa-network-wired"></i></div>
+        <div class="stat-info">
+            <span class="stat-value" id="stat-total-devices">{{ stats.total_devices }}</span>
+            <span class="stat-title">Total Devices</span>
+        </div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-icon icon-online"><i class="fa-solid fa-circle-check"></i></div>
+        <div class="stat-info">
+            <span class="stat-value" id="stat-online-devices">{{ stats.online_devices }}</span>
+            <span class="stat-title">Active Online</span>
+        </div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-icon icon-quarantined"><i class="fa-solid fa-ban"></i></div>
+        <div class="stat-info">
+            <span class="stat-value text-danger" id="stat-quarantined-devices">{{ stats.quarantined_devices }}</span>
+            <span class="stat-title">Quarantined Hosts</span>
+        </div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-icon icon-alerts"><i class="fa-solid fa-triangle-exclamation"></i></div>
+        <div class="stat-info">
+            <span class="stat-value text-warning" id="stat-open-alerts">{{ stats.open_alerts }}</span>
+            <span class="stat-title">Open Alerts</span>
+        </div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-icon icon-risk"><i class="fa-solid fa-fire"></i></div>
+        <div class="stat-info">
+            <span class="stat-value text-danger" id="stat-high-risk">{{ stats.high_risk_devices }}</span>
+            <span class="stat-title">High Risk Hosts (Score &ge; 70)</span>
+        </div>
+    </div>
+</section>
+
+<!-- Simulation Control Center -->
+<section class="card simulation-panel">
+    <div class="panel-header">
+        <div>
+            <h3><i class="fa-solid fa-flask-vial"></i> Attack Simulation & Demonstration Lab</h3>
+            <p class="panel-subtitle">Inject live attack vectors into the NetGuardian engine to test real-time detection, behaviour drift, and automatic quarantine.</p>
+        </div>
+        <button class="btn btn-sm btn-outline-danger" onclick="triggerSimulation('reset')">
+            <i class="fa-solid fa-rotate-left"></i> Reset Simulation
+        </button>
+    </div>
+    <div class="simulation-buttons">
+        <button class="btn btn-sim" onclick="triggerSimulation('port_scan')">
+            <i class="fa-solid fa-crosshairs"></i> Simulate Port Scan (+30 Risk)
+        </button>
+        <button class="btn btn-sim" onclick="triggerSimulation('dns_anomaly')">
+            <i class="fa-solid fa-globe"></i> Simulate DNS Anomaly (+20 Risk)
+        </button>
+        <button class="btn btn-sim" onclick="triggerSimulation('traffic_spike')">
+            <i class="fa-solid fa-chart-line-up"></i> Simulate Traffic Spike & Drift (+30 Risk)
+        </button>
+        <button class="btn btn-sim" onclick="triggerSimulation('rogue_device')">
+            <i class="fa-solid fa-user-secret"></i> Inject Rogue Device (+20 Risk)
+        </button>
+        <button class="btn btn-sim btn-danger-glow" onclick="triggerSimulation('critical_attack')">
+            <i class="fa-solid fa-skull-crossbones"></i> Full Attack (Triggers Quarantine)
+        </button>
+    </div>
+</section>
+
+<div class="dashboard-grid">
+    <!-- Devices Inventory Section -->
+    <section class="card devices-panel">
+        <div class="panel-header">
+            <h3><i class="fa-solid fa-server"></i> Discovered Network Devices</h3>
+            <span class="badge badge-info">{{ devices|length }} Identified</span>
+        </div>
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Device / Hostname</th>
+                        <th>IP Address</th>
+                        <th>MAC Address</th>
+                        <th>Type</th>
+                        <th>Status</th>
+                        <th>Risk Score</th>
+                        <th>Trust</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="devices-table-body">
+                    {% for dev in devices %}
+                    <tr id="dev-row-{{ dev.id }}" class="{{ 'row-quarantined' if dev.status == 'quarantined' else '' }}">
+                        <td>
+                            <a href="/device/{{ dev.id }}" class="device-link">
+                                <strong>{{ dev.device_name or dev.hostname or 'Unknown Device' }}</strong>
+                            </a>
+                            <div class="subtext">{{ dev.hostname or 'No DNS PTR' }}</div>
+                        </td>
+                        <td><code>{{ dev.ip_address }}</code></td>
+                        <td><small>{{ dev.mac_address or 'N/A' }}</small></td>
+                        <td><span class="device-tag">{{ dev.device_type or 'General' }}</span></td>
+                        <td>
+                            {% if dev.status == 'quarantined' %}
+                            <span class="badge badge-danger"><i class="fa-solid fa-ban"></i> Quarantined</span>
+                            {% else %}
+                            <span class="badge badge-success"><i class="fa-solid fa-check"></i> Online</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="risk-bar-container">
+                                <div class="risk-bar {% if dev.risk_score >= 70 %}risk-high{% elif dev.risk_score >= 40 %}risk-medium{% else %}risk-low{% endif %}" 
+                                     style="width: {{ [dev.risk_score, 10]|max }}%;">
+                                </div>
+                            </div>
+                            <span class="risk-number {% if dev.risk_score >= 70 %}text-danger{% elif dev.risk_score >= 40 %}text-warning{% else %}text-success{% endif %}">
+                                {{ dev.risk_score }}/100
+                            </span>
+                        </td>
+                        <td>
+                            <button class="btn btn-sm {{ 'btn-trusted' if dev.trusted else 'btn-untrusted' }}" 
+                                    onclick="toggleTrust({{ dev.id }}, {{ 0 if dev.trusted else 1 }})">
+                                <i class="fa-solid {{ 'fa-shield-check' if dev.trusted else 'fa-shield-xmark' }}"></i>
+                                {{ 'Trusted' if dev.trusted else 'Untrusted' }}
+                            </button>
+                        </td>
+                        <td>
+                            <div class="action-buttons">
+                                <a href="/device/{{ dev.id }}" class="btn btn-sm btn-outline"><i class="fa-solid fa-chart-pie"></i> Profile</a>
+                                {% if dev.status == 'quarantined' %}
+                                <button class="btn btn-sm btn-success" onclick="toggleQuarantine({{ dev.id }}, 'release')">
+                                    <i class="fa-solid fa-unlock"></i> Release
+                                </button>
+                                {% else %}
+                                <button class="btn btn-sm btn-danger" onclick="toggleQuarantine({{ dev.id }}, 'quarantine')">
+                                    <i class="fa-solid fa-lock"></i> Isolate
+                                </button>
+                                {% endif %}
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- Security Alerts Section -->
+    <section class="card alerts-panel">
+        <div class="panel-header">
+            <h3><i class="fa-solid fa-bell"></i> Security Alerts Feed</h3>
+            <span class="badge badge-warning" id="alert-counter">{{ alerts|length }} Recent</span>
+        </div>
+        <div class="alerts-feed" id="alerts-feed-container">
+            {% if not alerts %}
+            <div class="empty-state">
+                <i class="fa-solid fa-shield-heart empty-icon"></i>
+                <p>No active threats detected. Network is clean.</p>
+            </div>
+            {% endif %}
+            {% for alert in alerts %}
+            <div class="alert-item alert-{{ alert.severity|lower }}">
+                <div class="alert-icon">
+                    {% if alert.severity == 'CRITICAL' %}
+                    <i class="fa-solid fa-skull"></i>
+                    {% elif alert.severity == 'HIGH' %}
+                    <i class="fa-solid fa-triangle-exclamation"></i>
+                    {% else %}
+                    <i class="fa-solid fa-circle-exclamation"></i>
+                    {% endif %}
+                </div>
+                <div class="alert-content">
+                    <div class="alert-meta">
+                        <span class="badge badge-{{ alert.severity|lower }}">{{ alert.severity }}</span>
+                        <span class="alert-type">{{ alert.alert_type|replace('_', ' ')|upper }}</span>
+                        <span class="alert-time">{{ alert.timestamp.split('T')[-1] if 'T' in alert.timestamp else alert.timestamp }}</span>
+                    </div>
+                    <p class="alert-description">{{ alert.description }}</p>
+                    <div class="alert-device-info">
+                        Host: <code>{{ alert.ip_address }}</code> ({{ alert.device_name or alert.hostname or 'Unknown' }})
+                    </div>
+                </div>
+                {% if alert.status == 'open' %}
+                <button class="btn btn-sm btn-resolve" onclick="resolveAlert({{ alert.id }})">
+                    <i class="fa-solid fa-check"></i>
+                </button>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+    </section>
+</div>
+
+<!-- Recent Traffic Stream Section -->
+<section class="card traffic-panel">
+    <div class="panel-header">
+        <h3><i class="fa-solid fa-wave-pulse"></i> Live Network Traffic Telemetry</h3>
+        <span class="badge badge-info">Latest 25 Flows</span>
+    </div>
+    <div class="table-responsive">
+        <table class="data-table table-sm">
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Source Device</th>
+                    <th>Destination IP</th>
+                    <th>Protocol</th>
+                    <th>Target Port</th>
+                    <th>DNS Query / Payload</th>
+                    <th>Bytes</th>
+                </tr>
+            </thead>
+            <tbody id="traffic-table-body">
+                {% for t in traffic %}
+                <tr>
+                    <td><small>{{ t.timestamp.split('T')[-1] if 'T' in t.timestamp else t.timestamp }}</small></td>
+                    <td><code>{{ t.source_ip }}</code> ({{ t.device_name or 'Host' }})</td>
+                    <td><code>{{ t.destination_ip or '-' }}</code></td>
+                    <td><span class="proto-tag proto-{{ t.protocol|lower }}">{{ t.protocol }}</span></td>
+                    <td>{{ t.destination_port or '-' }}</td>
+                    <td><span class="dns-domain">{{ t.dns_query or '-' }}</span></td>
+                    <td>{{ t.packet_size }} B</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

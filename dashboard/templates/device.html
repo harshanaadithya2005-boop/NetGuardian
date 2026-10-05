@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="breadcrumb">
+    <a href="/"><i class="fa-solid fa-arrow-left"></i> Back to Dashboard</a>
+</div>
+
+<div class="device-detail-header card">
+    <div class="device-profile-title">
+        <div class="device-avatar"><i class="fa-solid fa-laptop-code"></i></div>
+        <div>
+            <h2>{{ device.device_name or device.hostname or 'Device ' ~ device.id }}</h2>
+            <div class="device-subdetails">
+                <span><strong>IP:</strong> <code>{{ device.ip_address }}</code></span>
+                <span><strong>MAC:</strong> <code>{{ device.mac_address or 'Unknown' }}</code></span>
+                <span><strong>Type:</strong> <span class="device-tag">{{ device.device_type }}</span></span>
+                <span><strong>First Seen:</strong> {{ device.first_seen }}</span>
+            </div>
+        </div>
+    </div>
+    <div class="device-header-actions">
+        {% if device.status == 'quarantined' %}
+        <span class="badge badge-danger badge-lg"><i class="fa-solid fa-ban"></i> QUARANTINED</span>
+        <button class="btn btn-success" onclick="toggleQuarantine({{ device.id }}, 'release')">
+            <i class="fa-solid fa-unlock"></i> Release from Isolation
+        </button>
+        {% else %}
+        <span class="badge badge-success badge-lg"><i class="fa-solid fa-check"></i> NORMAL ACCESS</span>
+        <button class="btn btn-danger" onclick="toggleQuarantine({{ device.id }}, 'quarantine')">
+            <i class="fa-solid fa-lock"></i> Quarantine Device
+        </button>
+        {% endif %}
+    </div>
+</div>
+
+<div class="dashboard-grid">
+    <!-- Risk & Drift Summary -->
+    <div class="card">
+        <div class="panel-header">
+            <h3><i class="fa-solid fa-chart-pie"></i> Risk & Behaviour Drift Assessment</h3>
+            <span class="badge {% if device.risk_score >= 70 %}badge-danger{% elif device.risk_score >= 40 %}badge-warning{% else %}badge-success{% endif %}">
+                {{ risk_level }} RISK
+            </span>
+        </div>
+        <div class="score-display">
+            <div class="score-circle {% if device.risk_score >= 70 %}circle-high{% elif device.risk_score >= 40 %}circle-med{% else %}circle-low{% endif %}">
+                <span class="score-number">{{ device.risk_score }}</span>
+                <span class="score-max">/100</span>
+            </div>
+            <div class="score-explanation">
+                <h4>Overall Risk Assessment</h4>
+                <p>
+                    {% if device.risk_score >= 70 %}
+                    Critical security anomalies detected. Automatic network quarantine is enforced.
+                    {% elif device.risk_score >= 40 %}
+                    Suspicious behaviour detected. Flagged on dashboard for administrator review.
+                    {% else %}
+                    Device metrics are consistent with historical baseline profile.
+                    {% endif %}
+                </p>
+                <div class="drift-stat">
+                    <span>Behaviour Drift Score:</span>
+                    <strong class="{% if drift.drift_score >= 50 %}text-danger{% elif drift.drift_score >= 25 %}text-warning{% else %}text-success{% endif %}">
+                        {{ drift.drift_score }}%
+                    </strong>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Behavioural Baseline vs Observed (Proposal Section 8.2) -->
+    <div class="card">
+        <div class="panel-header">
+            <h3><i class="fa-solid fa-scale-balanced"></i> Behavioural Baseline Comparison</h3>
+            <span class="badge badge-info">Proposal Section 8.2</span>
+        </div>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Metric</th>
+                    <th>Baseline Normal</th>
+                    <th>Observed Current</th>
+                    <th>Drift</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if drift.breakdown %}
+                <tr>
+                    <td><strong>DNS Queries / Window</strong></td>
+                    <td>{{ drift.breakdown.dns.normal|int }}</td>
+                    <td>{{ drift.breakdown.dns.observed|int }}</td>
+                    <td>
+                        <span class="badge {{ 'badge-danger' if drift.breakdown.dns.drift_pct > 200 else ('badge-warning' if drift.breakdown.dns.drift_pct > 50 else 'badge-success') }}">
+                            +{{ drift.breakdown.dns.drift_pct }}%
+                        </span>
+                    </td>
+                </tr>
+                <tr>
+                    <td><strong>Distinct External IPs</strong></td>
+                    <td>{{ drift.breakdown.distinct_ips.normal|int }}</td>
+                    <td>{{ drift.breakdown.distinct_ips.observed|int }}</td>
+                    <td>
+                        <span class="badge {{ 'badge-danger' if drift.breakdown.distinct_ips.drift_pct > 200 else ('badge-warning' if drift.breakdown.distinct_ips.drift_pct > 50 else 'badge-success') }}">
+                            +{{ drift.breakdown.distinct_ips.drift_pct }}%
+                        </span>
+                    </td>
+                </tr>
+                <tr>
+                    <td><strong>Target Ports Contacted</strong></td>
+                    <td>{{ drift.breakdown.ports.normal|int }}</td>
+                    <td>{{ drift.breakdown.ports.observed|int }}</td>
+                    <td>
+                        <span class="badge {{ 'badge-danger' if drift.breakdown.ports.drift_pct > 200 else ('badge-warning' if drift.breakdown.ports.drift_pct > 50 else 'badge-success') }}">
+                            +{{ drift.breakdown.ports.drift_pct }}%
+                        </span>
+                    </td>
+                </tr>
+                <tr>
+                    <td><strong>Data Volume (MB)</strong></td>
+                    <td>{{ drift.breakdown.bandwidth_mb.normal }} MB</td>
+                    <td>{{ drift.breakdown.bandwidth_mb.observed }} MB</td>
+                    <td>
+                        <span class="badge {{ 'badge-danger' if drift.breakdown.bandwidth_mb.drift_pct > 200 else ('badge-warning' if drift.breakdown.bandwidth_mb.drift_pct > 50 else 'badge-success') }}">
+                            +{{ drift.breakdown.bandwidth_mb.drift_pct }}%
+                        </span>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="4" class="text-center">No baseline traffic comparisons available yet.</td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Device Traffic History -->
+<div class="card mt-20">
+    <div class="panel-header">
+        <h3><i class="fa-solid fa-list-check"></i> Host Traffic History</h3>
+        <span class="badge badge-info">{{ traffic|length }} Flows Recorded</span>
+    </div>
+    <div class="table-responsive">
+        <table class="data-table table-sm">
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Destination IP</th>
+                    <th>Protocol</th>
+                    <th>Port</th>
+                    <th>DNS Query</th>
+                    <th>Size (Bytes)</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for t in traffic %}
+                <tr>
+                    <td><small>{{ t.timestamp }}</small></td>
+                    <td><code>{{ t.destination_ip or '-' }}</code></td>
+                    <td><span class="proto-tag proto-{{ t.protocol|lower }}">{{ t.protocol }}</span></td>
+                    <td>{{ t.destination_port or '-' }}</td>
+                    <td>{{ t.dns_query or '-' }}</td>
+                    <td>{{ t.packet_size }} B</td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="6" class="text-center">No traffic recorded for this host yet.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
