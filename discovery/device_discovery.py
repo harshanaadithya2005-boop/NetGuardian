@@ -1,5 +1,5 @@
 from scapy.all import ARP, Ether, srp
-from database.models import add_or_update_device
+from database.models import add_or_update_device, mark_missing_devices_offline
 from datetime import datetime
 import socket
 
@@ -46,10 +46,11 @@ def discover_devices():
 
     print("Devices discovered:")
     print("-" * 70)
-
+    discovered_ips = []
     for sent, received in answered:
 
         ip_address = received.psrc
+        discovered_ips.append(ip_address)
         mac_address = received.hwsrc
 
         # Try to find hostname
@@ -67,7 +68,9 @@ def discover_devices():
             hostname=hostname,
             timestamp=current_time
         )
-
+    # Mark devices not found in this scan as offline
+    mark_missing_devices_offline(discovered_ips)
+    
     print(f"Total devices discovered: {len(answered)}")
 
 
