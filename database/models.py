@@ -29,6 +29,7 @@ def add_or_update_device(
             SET ip_address = ?,
                 mac_address = ?,
                 hostname = ?,
+                device_type = ?,
                 last_seen = ?,
                 status = 'online'
             WHERE id = ?
@@ -36,6 +37,7 @@ def add_or_update_device(
             ip_address,
             mac_address,
             hostname,
+            device_type,
             timestamp,
             existing_device["id"]
         ))
@@ -88,3 +90,4 @@ def mark_missing_devices_offline(discovered_ips):
 
     connection.commit()
     connection.close()
+    

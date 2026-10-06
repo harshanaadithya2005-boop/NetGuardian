@@ -88,6 +88,9 @@ def process_packet(packet):
 def start_capture(packet_count=10):
     """Capture a limited number of packets from the authorized interface."""
 
+    # Ensure the traffic table exists before saving captured data
+    create_traffic_table()
+
     print("Starting NetGuardian packet capture...")
     print(f"Capturing {packet_count} packets...")
     print("-" * 70)
