@@ -1,4 +1,6 @@
 from scapy.all import sniff, IP, TCP, UDP, ICMP
+from datetime import datetime
+from monitoring.traffic_monitor import create_traffic_table, save_traffic_record
 
 
 # Active Scapy/Npcap interface
@@ -62,6 +64,18 @@ def process_packet(packet):
         elif UDP in packet:
             source_port = packet[UDP].sport
             destination_port = packet[UDP].dport
+
+        timestamp = datetime.now().isoformat(timespec="seconds")
+
+        save_traffic_record(
+            source_ip=source_ip,
+            destination_ip=destination_ip,
+            protocol=protocol,
+            source_port=None if source_port == "-" else source_port,
+            destination_port=None if destination_port == "-" else destination_port,
+            packet_size=packet_size,
+            timestamp=timestamp
+        )
 
         print(
             f"Source: {source_ip}:{source_port} | "
