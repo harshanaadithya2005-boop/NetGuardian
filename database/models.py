@@ -14,30 +14,33 @@ def add_or_update_device(
     connection = get_connection()
     cursor = connection.cursor()
 
-    # Check whether this IP address already exists
+    # Identify the device by MAC address
     cursor.execute(
-        "SELECT id FROM devices WHERE ip_address = ?",
-        (ip_address,)
+        "SELECT id FROM devices WHERE mac_address = ?",
+        (mac_address,)
     )
 
     existing_device = cursor.fetchone()
 
     if existing_device:
-        # Device already exists
+        # Device already exists - update its current network information
         cursor.execute("""
             UPDATE devices
-            SET mac_address = ?,
+            SET ip_address = ?,
+                mac_address = ?,
                 hostname = ?,
+                device_type = ?,
                 last_seen = ?,
                 status = 'online'
-            WHERE ip_address = ?
+            WHERE id = ?
         """, (
+            ip_address,
             mac_address,
             hostname,
+            device_type,
             timestamp,
-            ip_address
+            existing_device["id"]
         ))
-
     else:
         # New device
         cursor.execute("""
@@ -64,3 +67,27 @@ def add_or_update_device(
 
     connection.commit()
     connection.close()
+
+
+def mark_missing_devices_offline(discovered_ips):
+    """Mark devices not found in the latest scan as offline."""
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("SELECT ip_address FROM devices")
+    stored_devices = cursor.fetchall()
+
+    for device in stored_devices:
+        ip_address = device["ip_address"]
+
+        if ip_address not in discovered_ips:
+            cursor.execute("""
+                UPDATE devices
+                SET status = 'offline'
+                WHERE ip_address = ?
+            """, (ip_address,))
+
+    connection.commit()
+    connection.close()
+    

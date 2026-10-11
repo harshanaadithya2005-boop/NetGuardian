@@ -1,5 +1,5 @@
 from scapy.all import ARP, Ether, srp
-from database.models import add_or_update_device
+from database.models import add_or_update_device, mark_missing_devices_offline
 from datetime import datetime
 import socket
 
@@ -21,6 +21,26 @@ def get_hostname(ip_address):
     except (socket.herror, socket.timeout, OSError):
         return None
 
+def get_device_type(hostname, ip_address):
+    """Estimate a basic device type using available network information."""
+
+    # The default gateway/router on the authorized test network
+    if ip_address == "192.168.8.1":
+        return "Router"
+
+    if hostname:
+        hostname_lower = hostname.lower()
+
+        if "desktop" in hostname_lower:
+            return "Desktop"
+
+        if "laptop" in hostname_lower:
+            return "Laptop"
+
+        if "iphone" in hostname_lower or "android" in hostname_lower:
+            return "Mobile"
+
+    return "Unknown"
 
 def discover_devices():
     """Discover devices and save them to the database."""
@@ -46,18 +66,23 @@ def discover_devices():
 
     print("Devices discovered:")
     print("-" * 70)
-
+    discovered_ips = []
     for sent, received in answered:
 
         ip_address = received.psrc
+        discovered_ips.append(ip_address)
         mac_address = received.hwsrc
 
         # Try to find hostname
         hostname = get_hostname(ip_address)
 
+        # Estimate device type
+        device_type = get_device_type(hostname, ip_address)
+
         print(f"IP Address : {ip_address}")
         print(f"MAC Address: {mac_address}")
         print(f"Hostname   : {hostname}")
+        print(f"Device Type: {device_type}")
         print("-" * 70)
 
         # Save device to database
@@ -65,9 +90,12 @@ def discover_devices():
             ip_address=ip_address,
             mac_address=mac_address,
             hostname=hostname,
+            device_type=device_type,
             timestamp=current_time
         )
-
+    # Mark devices not found in this scan as offline
+    mark_missing_devices_offline(discovered_ips)
+    
     print(f"Total devices discovered: {len(answered)}")
 
 

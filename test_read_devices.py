@@ -1,7 +1,6 @@
-import sqlite3
+from database.db import get_connection
 
-connection = sqlite3.connect("netguardian.db")
-connection.row_factory = sqlite3.Row
+connection = get_connection()
 
 cursor = connection.cursor()
 
