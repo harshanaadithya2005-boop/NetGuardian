@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Alerts</h2>
+<table>
+  <tr><th>Alert</th><th>Device IP</th><th>Risk</th><th>Severity</th><th>Status</th><th>Time</th></tr>
+  {% for a in alerts %}
+  <tr>
+    <td>{{ a['alert_type'] }}</td>
+    <td>{{ a['ip_address'] }}</td>
+    <td>{{ a['risk_score'] }}</td>
+    <td><span class="badge {{ a['severity'] }}">{{ a['severity'] }}</span></td>
+    <td>
+      <form method="post" action="/alerts/{{ a['id'] }}/status" style="display:flex;gap:6px;">
+        <select name="status">
+          {% for s in ['New', 'Investigating', 'Resolved', 'False Positive'] %}
+          <option value="{{ s }}" {% if a['status'] == s %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit">Save</button>
+      </form>
+    </td>
+    <td>{{ a['time'] }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

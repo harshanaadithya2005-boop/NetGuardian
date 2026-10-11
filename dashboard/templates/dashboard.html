@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Dashboard</h2>
+
+<div class="cards">
+  <div class="card"><h3>Devices</h3><div class="value">{{ device_count }}</div></div>
+  <div class="card"><h3>Alerts</h3><div class="value">{{ alert_count }}</div></div>
+  <div class="card"><h3>Risk</h3><div class="value"><span class="badge {{ risk_level }}">{{ risk_level }}</span></div></div>
+</div>
+
+<div class="panel">
+  <h3>Alerts by Severity</h3>
+  <canvas id="sevChart" height="90"></canvas>
+</div>
+
+<div class="panel">
+  <h3>Latest Alerts</h3>
+  <table>
+    <tr><th>Type</th><th>Risk</th><th>Severity</th><th>Status</th><th>Time</th></tr>
+    {% for a in latest %}
+    <tr>
+      <td>⚠ {{ a['alert_type'] }}</td>
+      <td>{{ a['risk_score'] }}</td>
+      <td><span class="badge {{ a['severity'] }}">{{ a['severity'] }}</span></td>
+      <td>{{ a['status'] }}</td>
+      <td>{{ a['time'] }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+  new Chart(document.getElementById('sevChart'), {
+    type: 'bar',
+    data: {
+      labels: ['Low', 'Medium', 'High', 'Critical'],
+      datasets: [{
+        label: 'Alerts',
+        data: {{ severity_counts|tojson }},
+        backgroundColor: ['#16a34a', '#eab308', '#ea580c', '#dc2626']
+      }]
+    },
+    options: { scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }
+  });
+</script>
+{% endblock %}
