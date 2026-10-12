@@ -75,6 +75,39 @@ def update_alert_status(alert_id):
         conn.close()
     return redirect("/alerts")
 
+@app.route("/analytics")
+def analytics():
+    conn = get_connection()
+
+    traffic_rows = conn.execute(
+        "SELECT substr(timestamp, 1, 10) AS day, SUM(packet_size) AS total "
+        "FROM traffic GROUP BY day ORDER BY day"
+    ).fetchall()
+    traffic_labels = [r["day"] for r in traffic_rows]
+    traffic_values = [r["total"] for r in traffic_rows]
+
+    proto_rows = conn.execute(
+        "SELECT protocol, COUNT(*) AS c FROM traffic GROUP BY protocol ORDER BY c DESC"
+    ).fetchall()
+    proto_labels = [r["protocol"] for r in proto_rows]
+    proto_values = [r["c"] for r in proto_rows]
+
+    risk_values = []
+    for s in ["Low", "Medium", "High", "Critical"]:
+        risk_values.append(
+            conn.execute("SELECT COUNT(*) FROM alerts WHERE severity = ?", (s,)).fetchone()[0]
+        )
+    conn.close()
+
+    return render_template(
+        "analytics.html",
+        traffic_labels=traffic_labels,
+        traffic_values=traffic_values,
+        proto_labels=proto_labels,
+        proto_values=proto_values,
+        risk_values=risk_values,
+    )
+
 
 if __name__ == "__main__":
     app.run(debug=True)

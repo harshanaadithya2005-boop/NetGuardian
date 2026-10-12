@@ -24,7 +24,18 @@ if cur.fetchone()[0] == 0:
         "INSERT INTO alerts (device_id, alert_type, risk_score, severity, description, status, time) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (dev, "Traffic Spike", 60, "High", "Unusual traffic volume detected.", "New", now),
     )
-
+# Sample traffic (only if none exist yet)
+cur.execute("SELECT COUNT(*) FROM traffic")
+if cur.fetchone()[0] == 0:
+    from datetime import timedelta
+    dev_id = cur.execute("SELECT id FROM devices ORDER BY id LIMIT 1").fetchone()["id"]
+    protocols = ["HTTPS", "HTTPS", "HTTPS", "HTTPS", "HTTPS", "HTTPS", "HTTPS", "DNS", "DNS", "HTTP", "Other"]
+    for i in range(60):
+        ts = (datetime.now() - timedelta(days=i % 7)).strftime("%Y-%m-%d %H:%M:%S")
+        cur.execute(
+            "INSERT INTO traffic (device_id, source_ip, destination_ip, protocol, packet_size, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+            (dev_id, "192.168.8.101", "8.8.8.8", protocols[i % len(protocols)], 200 + (i * 37) % 1200, ts),
+        )
 conn.commit()
 conn.close()
 print("Sample data inserted.")
