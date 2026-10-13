@@ -1,5 +1,11 @@
-from flask import Flask, render_template, request, redirect
+from flask import Flask, render_template, request, redirect, Response
+import csv
+import io
 from database.db import get_connection
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
 
 app = Flask(
     __name__,
@@ -106,6 +112,93 @@ def analytics():
         proto_labels=proto_labels,
         proto_values=proto_values,
         risk_values=risk_values,
+    )
+
+@app.route("/reports")
+def reports():
+    conn = get_connection()
+    total_devices = conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0]
+    total_alerts = conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
+    unknown_devices = conn.execute(
+        "SELECT COUNT(*) FROM devices WHERE hostname = 'Unknown' OR device_type = 'Unknown'"
+    ).fetchone()[0]
+    highest_risk = conn.execute("SELECT COALESCE(MAX(risk_score), 0) FROM alerts").fetchone()[0]
+    top = conn.execute(
+        "SELECT devices.hostname, COUNT(*) AS c FROM traffic "
+        "JOIN devices ON traffic.device_id = devices.id "
+        "GROUP BY devices.id ORDER BY c DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    return render_template(
+        "reports.html",
+        total_devices=total_devices,
+        total_alerts=total_alerts,
+        unknown_devices=unknown_devices,
+        highest_risk=highest_risk,
+        top_device=top["hostname"] if top else "N/A",
+    )
+
+
+@app.route("/reports/alerts.csv")
+def alerts_csv():
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT alerts.id, devices.ip_address, alerts.alert_type, alerts.risk_score, "
+        "alerts.severity, alerts.status, alerts.time "
+        "FROM alerts JOIN devices ON alerts.device_id = devices.id ORDER BY alerts.id"
+    ).fetchall()
+    conn.close()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["ID", "Device IP", "Type", "Risk", "Severity", "Status", "Time"])
+    for r in rows:
+        writer.writerow(list(r))
+
+    return Response(
+        buf.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=alerts_report.csv"},
+    )
+@app.route("/reports/report.pdf")
+def report_pdf():
+    conn = get_connection()
+    total_devices = conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0]
+    total_alerts = conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
+    highest_risk = conn.execute("SELECT COALESCE(MAX(risk_score), 0) FROM alerts").fetchone()[0]
+    rows = conn.execute(
+        "SELECT devices.ip_address, alerts.alert_type, alerts.risk_score, "
+        "alerts.severity, alerts.status, alerts.time "
+        "FROM alerts JOIN devices ON alerts.device_id = devices.id ORDER BY alerts.id DESC"
+    ).fetchall()
+    conn.close()
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4)
+    styles = getSampleStyleSheet()
+    story = [
+        Paragraph("NetGuardian Report", styles["Title"]),
+        Paragraph(f"Devices: {total_devices} &nbsp;&nbsp; Alerts: {total_alerts} &nbsp;&nbsp; Highest Risk: {highest_risk}", styles["Normal"]),
+        Spacer(1, 16),
+    ]
+    data = [["Device IP", "Type", "Risk", "Severity", "Status", "Time"]]
+    for r in rows:
+        data.append([r["ip_address"], r["alert_type"], str(r["risk_score"]), r["severity"], r["status"], r["time"]])
+
+    table = Table(data, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#334155")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+    ]))
+    story.append(table)
+    doc.build(story)
+
+    return Response(
+        buf.getvalue(),
+        mimetype="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=netguardian_report.pdf"},
     )
 
 

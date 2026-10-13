@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Reports</h2>
+
+<div class="cards">
+  <div class="card"><h3>Devices</h3><div class="value">{{ total_devices }}</div></div>
+  <div class="card"><h3>Alerts</h3><div class="value">{{ total_alerts }}</div></div>
+  <div class="card"><h3>Unknown Devices</h3><div class="value">{{ unknown_devices }}</div></div>
+  <div class="card"><h3>Highest Risk</h3><div class="value">{{ highest_risk }}</div></div>
+</div>
+
+<div class="panel">
+  <h3>Top Device (most traffic)</h3>
+  <p style="font-size:20px;">{{ top_device }}</p>
+</div>
+
+<div class="panel">
+  <h3>Export</h3>
+  <a href="/reports/alerts.csv"><button type="button">Download Alerts CSV</button></a>
+    <a href="/reports/report.pdf"><button type="button">Download PDF Report</button></a>
+</div>
+{% endblock %}
