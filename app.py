@@ -6,6 +6,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
+from datetime import datetime
+from ai.ai_engine import explain_alert
 
 app = Flask(
     __name__,
@@ -199,6 +201,40 @@ def report_pdf():
         buf.getvalue(),
         mimetype="application/pdf",
         headers={"Content-Disposition": "attachment; filename=netguardian_report.pdf"},
+    )
+
+@app.route("/alerts/<int:alert_id>/explain")
+def explain(alert_id):
+    conn = get_connection()
+    alert = conn.execute(
+        "SELECT alerts.*, devices.ip_address FROM alerts "
+        "JOIN devices ON alerts.device_id = devices.id WHERE alerts.id = ?",
+        (alert_id,),
+    ).fetchone()
+    if alert is None:
+        conn.close()
+        return "Alert not found", 404
+
+    existing = conn.execute(
+        "SELECT summary, recommendation FROM ai_reports WHERE alert_id = ? ORDER BY id DESC LIMIT 1",
+        (alert_id,),
+    ).fetchone()
+
+    if existing:
+        summary, recommendation, source = existing["summary"], existing["recommendation"], "Saved"
+    else:
+        summary, recommendation, source = explain_alert(
+            alert["alert_type"], alert["severity"], alert["risk_score"],
+            alert["description"], alert["ip_address"],
+        )
+        conn.execute(
+            "INSERT INTO ai_reports (alert_id, summary, recommendation, created_at) VALUES (?, ?, ?, ?)",
+            (alert_id, summary, recommendation, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        conn.commit()
+    conn.close()
+    return render_template(
+        "explain.html", alert=alert, summary=summary, recommendation=recommendation, source=source
     )
 
 

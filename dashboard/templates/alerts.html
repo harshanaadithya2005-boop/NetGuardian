@@ -2,7 +2,7 @@
 {% block content %}
 <h2>Alerts</h2>
 <table>
-  <tr><th>Alert</th><th>Device IP</th><th>Risk</th><th>Severity</th><th>Status</th><th>Time</th></tr>
+  <tr><th>Alert</th><th>Device IP</th><th>Risk</th><th>Severity</th><th>Status</th><th>Time</th></tr><th></th>
   {% for a in alerts %}
   <tr>
     <td>{{ a['alert_type'] }}</td>
@@ -20,6 +20,7 @@
       </form>
     </td>
     <td>{{ a['time'] }}</td>
+        <td><a href="/alerts/{{ a['id'] }}/explain"><button type="button">Explain</button></a></td>
   </tr>
   {% endfor %}
 </table>
