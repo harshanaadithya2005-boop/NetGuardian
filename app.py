@@ -3,12 +3,25 @@ import sys
 import threading
 import time
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify
-
 # Ensure project root is in sys.path
 BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
+
+# Auto-detect virtual environment if launched via global python
+venv_python = BASE_DIR / ".venv" / "Scripts" / "python.exe"
+if not venv_python.exists():
+    venv_python = BASE_DIR / ".venv" / "bin" / "python"
+
+if venv_python.exists() and Path(sys.executable).resolve() != venv_python.resolve():
+    try:
+        import flask
+    except ImportError:
+        import subprocess
+        proc = subprocess.run([str(venv_python), str(BASE_DIR / "app.py")] + sys.argv[1:])
+        sys.exit(proc.returncode)
+
+from flask import Flask, render_template, request, jsonify
 
 import config
 from database.db import initialize_database
