@@ -1,11 +1,29 @@
-from scapy.all import sniff, IP, TCP, UDP, ICMP
+import sys
+import threading
+import time
+from pathlib import Path
 from datetime import datetime
+
+# Ensure project root is in sys.path
+BASE_DIR = Path(__file__).resolve().parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+import config
+from database.models import get_device_by_ip, add_or_update_device, log_traffic
+from discovery.device_discovery import detect_active_interface
 from monitoring.traffic_monitor import create_traffic_table, save_traffic_record
 
+try:
+    from scapy.all import sniff, IP, TCP, UDP, ICMP, DNS, DNSQR
+    SCAPY_AVAILABLE = True
+except Exception:
+    SCAPY_AVAILABLE = False
 
-# Active Scapy/Npcap interface
-INTERFACE = r"\Device\NPF_{B6782096-0312-4A4E-B1DF-CC38D37385A3}"
+# Active interface with dynamic fallback
+INTERFACE = detect_active_interface()
 
+# Traffic statistics tracking
 traffic_stats = {
     "total_packets": 0,
     "total_bytes": 0,
@@ -17,130 +35,193 @@ traffic_stats = {
 
 device_traffic = {}
 
+# Background thread control
+_capture_thread = None
+_stop_capture = threading.Event()
+
+
 def get_protocol(packet):
     """Identify the main protocol used by an IP packet."""
-
+    if not SCAPY_AVAILABLE:
+        return "OTHER"
     if TCP in packet:
         return "TCP"
-
     if UDP in packet:
         return "UDP"
-
     if ICMP in packet:
         return "ICMP"
-
     return "OTHER"
 
 
 def process_packet(packet):
-    """Display information about captured IP packets."""
+    """Callback function executed on every intercepted packet."""
+    if not SCAPY_AVAILABLE or not packet.haslayer(IP):
+        return
 
-    if IP in packet:
-        source_ip = packet[IP].src
-        destination_ip = packet[IP].dst
+    try:
+        ip_layer = packet.getlayer(IP)
+        source_ip = ip_layer.src
+        destination_ip = ip_layer.dst
         packet_size = len(packet)
         protocol = get_protocol(packet)
 
+        # Update running in-memory stats
         traffic_stats["total_packets"] += 1
         traffic_stats["total_bytes"] += packet_size
         traffic_stats[protocol] += 1
 
         if source_ip not in device_traffic:
-            device_traffic[source_ip] = {
-        "packets": 0,
-        "bytes": 0
-    }
-
+            device_traffic[source_ip] = {"packets": 0, "bytes": 0}
         device_traffic[source_ip]["packets"] += 1
         device_traffic[source_ip]["bytes"] += packet_size
 
-        source_port = "-"
-        destination_port = "-"
+        # Extract port information
+        source_port = None
+        destination_port = None
+        dns_query = None
 
-        if TCP in packet:
+        if packet.haslayer(TCP):
             source_port = packet[TCP].sport
             destination_port = packet[TCP].dport
-
-        elif UDP in packet:
+        elif packet.haslayer(UDP):
             source_port = packet[UDP].sport
             destination_port = packet[UDP].dport
+            if packet.haslayer(DNS) and packet.haslayer(DNSQR):
+                protocol = "DNS"
+                try:
+                    qname = packet[DNSQR].qname
+                    dns_query = qname.decode("utf-8").rstrip(".") if isinstance(qname, bytes) else str(qname).rstrip(".")
+                except Exception:
+                    dns_query = None
 
         timestamp = datetime.now().isoformat(timespec="seconds")
 
-        save_traffic_record(
+        # 1. Save to Member 1's traffic_statistics table
+        try:
+            save_traffic_record(
+                source_ip=source_ip,
+                destination_ip=destination_ip,
+                protocol=protocol,
+                source_port=source_port,
+                destination_port=destination_port,
+                packet_size=packet_size,
+                timestamp=timestamp
+            )
+        except Exception:
+            pass
+
+        # Ignore loopback traffic for core NetGuardian device database
+        if source_ip.startswith("127.") or destination_ip.startswith("127."):
+            return
+
+        # 2. Check if source device exists in our database
+        dev = get_device_by_ip(source_ip)
+        if not dev:
+            # Auto-register newly active IP
+            dev_id = add_or_update_device(
+                ip_address=source_ip,
+                mac_address="AUTO-CAPTURED",
+                hostname=f"Host-{source_ip.split('.')[-1]}"
+            )
+        else:
+            dev_id = dev["id"]
+
+        # 3. Log to NetGuardian's dashboard traffic telemetry table
+        log_traffic(
+            device_id=dev_id,
             source_ip=source_ip,
             destination_ip=destination_ip,
             protocol=protocol,
-            source_port=None if source_port == "-" else source_port,
-            destination_port=None if destination_port == "-" else destination_port,
+            destination_port=destination_port,
             packet_size=packet_size,
+            dns_query=dns_query,
             timestamp=timestamp
         )
+    except Exception:
+        pass
 
-        print(
-            f"Source: {source_ip}:{source_port} | "
-            f"Destination: {destination_ip}:{destination_port} | "
-            f"Protocol: {protocol} | "
-            f"Size: {packet_size} bytes"
+
+def _sniff_worker(interface):
+    """Background sniffer loop."""
+    print(f"[PacketCapture] Passive sniffing started on interface: {interface}")
+    create_traffic_table()
+    try:
+        sniff(
+            iface=interface,
+            prn=process_packet,
+            store=False,
+            stop_filter=lambda p: _stop_capture.is_set()
         )
+    except Exception as e:
+        print(f"[PacketCapture] Sniffing error: {e}")
+    print("[PacketCapture] Sniffing stopped.")
 
 
-def start_capture(packet_count=10):
-    """Capture a limited number of packets from the authorized interface."""
+def start_capture(interface=None, packet_count=None):
+    """
+    Start packet capture:
+    - If packet_count is specified, captures that many packets synchronously (Member 1 mode)
+    - If packet_count is None, runs continuously in background daemon thread (NetGuardian engine mode)
+    """
+    global _capture_thread, _stop_capture
 
-    # Ensure the traffic table exists before saving captured data
+    if not SCAPY_AVAILABLE:
+        print("[PacketCapture] Scapy not available. Sniffing cannot start.")
+        return False
+
+    iface = interface or detect_active_interface()
     create_traffic_table()
 
-    print("Starting NetGuardian packet capture...")
-    print(f"Capturing {packet_count} packets...")
-    print("-" * 70)
+    # Synchronous limited capture mode (Member 1 CLI test)
+    if packet_count is not None:
+        print("Starting NetGuardian packet capture...")
+        print(f"Capturing {packet_count} packets on {iface}...")
+        print("-" * 70)
 
-    sniff(
-        iface=INTERFACE,
-        prn=process_packet,
-        count=packet_count,
-        store=False
-    )
-
-    print("-" * 70)
-    print("Packet capture completed.")
-    print()
-    print("Traffic Statistics")
-    print("-" * 70)
-    print(f"Total IP Packets : {traffic_stats['total_packets']}")
-    print(f"Total Bytes      : {traffic_stats['total_bytes']}")
-    print(f"TCP Packets      : {traffic_stats['TCP']}")
-    print(f"UDP Packets      : {traffic_stats['UDP']}")
-    print(f"ICMP Packets     : {traffic_stats['ICMP']}")
-    print(f"Other IP Packets : {traffic_stats['OTHER']}")
-
-    print()
-    print("Traffic by Source IP")
-    print("-" * 70)
-
-    for ip_address, stats in device_traffic.items():
-        print(
-            f"IP: {ip_address} | "
-            f"Packets Sent: {stats['packets']} | "
-            f"Bytes Sent: {stats['bytes']}"
+        sniff(
+            iface=iface,
+            prn=process_packet,
+            count=packet_count,
+            store=False
         )
 
-    print()
-    print("Top Talkers")
-    print("-" * 70)
+        print("-" * 70)
+        print("Packet capture completed.\n")
+        print("Traffic Statistics")
+        print("-" * 70)
+        print(f"Total IP Packets : {traffic_stats['total_packets']}")
+        print(f"Total Bytes      : {traffic_stats['total_bytes']}")
+        print(f"TCP Packets      : {traffic_stats['TCP']}")
+        print(f"UDP Packets      : {traffic_stats['UDP']}")
+        print(f"ICMP Packets     : {traffic_stats['ICMP']}")
+        print(f"Other IP Packets : {traffic_stats['OTHER']}")
+        print("\nTraffic by Source IP")
+        print("-" * 70)
+        for ip, stats in device_traffic.items():
+            print(f"IP: {ip} | Packets Sent: {stats['packets']} | Bytes Sent: {stats['bytes']}")
+        return True
 
-    sorted_devices = sorted(
-        device_traffic.items(),
-        key=lambda item: item[1]["bytes"],
-        reverse=True
-    )
+    # Continuous background daemon capture mode
+    if _capture_thread and _capture_thread.is_alive():
+        print("[PacketCapture] Capture is already running.")
+        return True
 
-    for position, (ip_address, stats) in enumerate(sorted_devices, start=1):
-        print(
-            f"{position}. {ip_address} | "
-            f"Packets Sent: {stats['packets']} | "
-            f"Bytes Sent: {stats['bytes']}"
-        )
+    _stop_capture.clear()
+    _capture_thread = threading.Thread(target=_sniff_worker, args=(iface,), daemon=True)
+    _capture_thread.start()
+    return True
+
+
+def stop_capture():
+    """Stop the background packet sniffer."""
+    global _stop_capture
+    _stop_capture.set()
+
+
+def is_capturing():
+    """Check if sniffer is running."""
+    return _capture_thread is not None and _capture_thread.is_alive()
+
 
 if __name__ == "__main__":
-    start_capture()
+    start_capture(packet_count=10)

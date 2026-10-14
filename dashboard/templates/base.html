@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}NetGuardian - Network Threat & Behaviour Monitoring{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <header class="navbar">
+        <div class="nav-brand">
+            <i class="fa-solid fa-shield-halved brand-icon"></i>
+            <div class="brand-text">
+                <span class="brand-title">NetGuardian</span>
+                <span class="brand-subtitle">Behavioural Fingerprinting & Auto-Quarantine</span>
+            </div>
+        </div>
+        <div class="nav-status">
+            <span class="pulse-indicator"></span>
+            <span class="status-label">Engine: Active Monitoring</span>
+            <button class="btn btn-outline" onclick="triggerDiscovery()"><i class="fa-solid fa-radar"></i> Scan Network</button>
+        </div>
+    </header>
+
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <p>NetGuardian &bull; Member 1 (Networking) &bull; Member 2 (Detection & Risk) &bull; Member 3 (Platform & Dashboard)</p>
+    </footer>
+
+    <div id="toast" class="toast hidden"></div>
+    <script src="/static/js/dashboard.js"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>
