@@ -17,12 +17,22 @@ def add_or_update_device(
     connection = get_connection()
     cursor = connection.cursor()
 
-    # Check whether this IP address already exists
-    cursor.execute(
-        "SELECT id, status, device_name, device_type FROM devices WHERE ip_address = ?",
-        (ip_address,)
-    )
-    existing_device = cursor.fetchone()
+    existing_device = None
+
+    # Identify by MAC address if valid, otherwise by IP address
+    if mac_address and mac_address not in ["UNKNOWN", "AUTO-CAPTURED", "LOCAL-HOST"]:
+        cursor.execute(
+            "SELECT id, status, device_name, device_type FROM devices WHERE mac_address = ?",
+            (mac_address,)
+        )
+        existing_device = cursor.fetchone()
+
+    if not existing_device:
+        cursor.execute(
+            "SELECT id, status, device_name, device_type FROM devices WHERE ip_address = ?",
+            (ip_address,)
+        )
+        existing_device = cursor.fetchone()
 
     if existing_device:
         device_id = existing_device["id"]
@@ -32,14 +42,18 @@ def add_or_update_device(
 
         cursor.execute("""
             UPDATE devices
-            SET mac_address = COALESCE(?, mac_address),
+            SET ip_address = ?,
+                mac_address = COALESCE(?, mac_address),
                 hostname = COALESCE(?, hostname),
+                device_type = COALESCE(?, device_type),
                 last_seen = ?,
                 status = ?
             WHERE id = ?
         """, (
+            ip_address,
             mac_address,
             hostname,
+            device_type,
             timestamp,
             new_status,
             device_id
@@ -80,6 +94,29 @@ def add_or_update_device(
     connection.commit()
     connection.close()
     return device_id
+
+
+def mark_missing_devices_offline(discovered_ips):
+    """Mark devices not found in the latest scan as offline (excluding quarantined ones)."""
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("SELECT ip_address, status FROM devices")
+    stored_devices = cursor.fetchall()
+
+    for device in stored_devices:
+        ip_address = device["ip_address"]
+        status = device["status"]
+
+        if ip_address not in discovered_ips and status != "quarantined":
+            cursor.execute("""
+                UPDATE devices
+                SET status = 'offline'
+                WHERE ip_address = ?
+            """, (ip_address,))
+
+    connection.commit()
+    connection.close()
 
 
 def infer_device_type(name_or_host, mac):
@@ -247,7 +284,6 @@ def create_alert(device_id, alert_type, risk_score, severity, description, times
 
     conn = get_connection()
     cur = conn.cursor()
-    # Avoid duplicate open alert for same device & type within a short time
     cur.execute("""
         SELECT id FROM alerts
         WHERE device_id = ? AND alert_type = ? AND status = 'open'

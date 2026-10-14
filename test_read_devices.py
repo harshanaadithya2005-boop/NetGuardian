@@ -1,8 +1,6 @@
 from database.db import get_connection
 
 connection = get_connection()
-connection.row_factory = get_connection().row_factory
-
 cursor = connection.cursor()
 cursor.execute("SELECT * FROM devices")
 devices = cursor.fetchall()

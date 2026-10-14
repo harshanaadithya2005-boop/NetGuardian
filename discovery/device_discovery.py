@@ -12,7 +12,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 import config
-from database.models import add_or_update_device
+from database.models import add_or_update_device, mark_missing_devices_offline
 
 try:
     from scapy.all import ARP, Ether, srp, get_if_list, get_if_addr, conf
@@ -49,12 +49,32 @@ def get_hostname(ip_address):
         return None
 
 
+def get_device_type(hostname, ip_address):
+    """Estimate a basic device type using available network information."""
+    if ip_address == "192.168.8.1" or ip_address.endswith(".1"):
+        return "Gateway/Router"
+
+    if hostname:
+        hostname_lower = hostname.lower()
+        if "desktop" in hostname_lower:
+            return "Desktop"
+        if "laptop" in hostname_lower:
+            return "Laptop"
+        if "iphone" in hostname_lower or "android" in hostname_lower or "phone" in hostname_lower:
+            return "Mobile"
+        if "printer" in hostname_lower:
+            return "Printer"
+        if "cam" in hostname_lower or "cctv" in hostname_lower:
+            return "CCTV / Camera"
+
+    return "IoT Device"
+
+
 def scan_via_system_arp():
     """Fallback scanner: Read the operating system's ARP table ('arp -a')."""
     devices = []
     try:
         output = subprocess.check_output(["arp", "-a"], text=True, stderr=subprocess.DEVNULL)
-        # Match lines like: 192.168.1.1   00-11-22-33-44-55   dynamic
         pattern = re.compile(r"(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F\-]{17})\s+(\w+)")
         for line in output.splitlines():
             match = pattern.search(line)
@@ -63,10 +83,12 @@ def scan_via_system_arp():
                 # Skip broadcast and multicast addresses
                 if not ip.startswith("224.") and not ip.startswith("239.") and not ip.endswith(".255"):
                     formatted_mac = mac.replace("-", ":").upper()
+                    hostname = get_hostname(ip)
                     devices.append({
                         "ip": ip,
                         "mac": formatted_mac,
-                        "hostname": get_hostname(ip)
+                        "hostname": hostname,
+                        "device_type": get_device_type(hostname, ip)
                     })
     except Exception as e:
         print(f"[Discovery] System ARP scan notice: {e}")
@@ -77,10 +99,12 @@ def discover_devices(target_network=None, iface=None, allow_fallback=True):
     """
     Discover devices and save them to the database.
     Tries Scapy ARP scan first; if unavailable or no responses, falls back to system ARP cache.
+    Marks missing devices as offline.
     """
     target = target_network or config.TARGET_NETWORK
     interface = iface or detect_active_interface()
     discovered = []
+    discovered_ips = []
     current_time = datetime.now().isoformat(timespec="seconds")
 
     print("=" * 60)
@@ -100,47 +124,62 @@ def discover_devices(target_network=None, iface=None, allow_fallback=True):
                 ip_address = received.psrc
                 mac_address = received.hwsrc.upper()
                 hostname = get_hostname(ip_address)
+                dev_type = get_device_type(hostname, ip_address)
+                discovered_ips.append(ip_address)
                 discovered.append({
                     "ip": ip_address,
                     "mac": mac_address,
-                    "hostname": hostname
+                    "hostname": hostname,
+                    "device_type": dev_type
                 })
         except Exception as e:
             print(f"[Discovery] Scapy ARP scan failed: {e}")
 
-    # 2. If Scapy produced 0 results or failed, use system ARP table fallback
+    # 2. Fallback to OS ARP table if needed
     if not discovered and allow_fallback:
         print("[Discovery] Using OS ARP table fallback...")
         discovered = scan_via_system_arp()
+        discovered_ips = [d["ip"] for d in discovered]
 
     # Always ensure local host machine is recorded
     local_ip = config.get_local_ip()
     if local_ip != "127.0.0.1" and not any(d["ip"] == local_ip for d in discovered):
+        discovered_ips.append(local_ip)
         discovered.append({
             "ip": local_ip,
             "mac": "LOCAL-HOST",
-            "hostname": socket.gethostname()
+            "hostname": socket.gethostname(),
+            "device_type": "Workstation"
         })
 
     # Save all discovered devices to database
     print("\nDevices Discovered and Saved to Database:")
-    print("-" * 60)
+    print("-" * 70)
     for dev in discovered:
         ip = dev["ip"]
         mac = dev.get("mac", "UNKNOWN")
         host = dev.get("hostname") or "Unknown"
+        dtype = dev.get("device_type") or get_device_type(host, ip)
 
         print(f"IP Address : {ip}")
         print(f"MAC Address: {mac}")
         print(f"Hostname   : {host}")
-        print("-" * 60)
+        print(f"Device Type: {dtype}")
+        print("-" * 70)
 
         add_or_update_device(
             ip_address=ip,
             mac_address=mac,
             hostname=host,
+            device_type=dtype,
             timestamp=current_time
         )
+
+    # Mark devices not found in this scan as offline (excluding quarantined ones)
+    try:
+        mark_missing_devices_offline(discovered_ips)
+    except Exception as e:
+        print(f"[Discovery] Offline tracking notice: {e}")
 
     print(f"Total devices discovered: {len(discovered)}\n")
     return discovered
