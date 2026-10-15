@@ -8,6 +8,7 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet
 from datetime import datetime
 from ai.ai_engine import explain_alert
+from flask import Flask, render_template, request, redirect, Response, jsonify
 
 app = Flask(
     __name__,
@@ -236,6 +237,18 @@ def explain(alert_id):
     return render_template(
         "explain.html", alert=alert, summary=summary, recommendation=recommendation, source=source
     )
+@app.route("/api/alerts/latest")
+def api_latest_alert():
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT alerts.id, alerts.alert_type, alerts.severity, devices.ip_address "
+        "FROM alerts JOIN devices ON alerts.device_id = devices.id "
+        "ORDER BY alerts.id DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return jsonify({"id": 0})
+    return jsonify(dict(row))
 
 
 if __name__ == "__main__":

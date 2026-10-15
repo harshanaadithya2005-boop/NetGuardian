@@ -51,3 +51,10 @@ select, button {
 button { cursor: pointer; background: #0284c7; border: none; }
 
 .panel { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 18px; margin-bottom: 24px; }
+
+#toast {
+  position: fixed; top: 20px; right: 20px; z-index: 999;
+  background: #9a3412; color: #fff; padding: 14px 20px;
+  border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,.4);
+  display: none; font-weight: bold;
+}
