@@ -1,30 +1,35 @@
 from scapy.all import ARP, Ether, srp
+import config
+from discovery.device_discovery import detect_active_interface
 
-# Our authorized test network
-target_network = "192.168.8.0/24"
+# Target network (auto-detected or configured)
+target_network = config.TARGET_NETWORK
 
-# Your active network interface
-interface = r"\Device\NPF_{B6782096-0312-4A4E-B1DF-CC38D37385A3}"
+# Active network interface (auto-detected)
+interface = detect_active_interface()
 
 print("Starting network discovery...")
-print(f"Scanning: {target_network}")
+print(f"Scanning : {target_network}")
+print(f"Interface: {interface}")
 print()
 
-packet = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=target_network)
+try:
+    packet = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=target_network)
+    answered, unanswered = srp(
+        packet,
+        timeout=2,
+        verbose=0,
+        iface=interface
+    )
 
-answered, unanswered = srp(
-    packet,
-    timeout=3,
-    verbose=0,
-    iface=interface
-)
-
-print("Devices found:")
-print("-" * 50)
-
-for sent, received in answered:
-    print(f"IP Address : {received.psrc}")
-    print(f"MAC Address: {received.hwsrc}")
+    print("Devices found:")
     print("-" * 50)
 
-print(f"Total devices found: {len(answered)}")
+    for sent, received in answered:
+        print(f"IP Address : {received.psrc}")
+        print(f"MAC Address: {received.hwsrc}")
+        print("-" * 50)
+
+    print(f"Total devices found: {len(answered)}")
+except Exception as e:
+    print(f"Discovery test notice: {e}")
