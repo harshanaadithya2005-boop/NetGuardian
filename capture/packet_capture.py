@@ -1,6 +1,7 @@
 import sys
 import threading
 import time
+import ipaddress
 from pathlib import Path
 from datetime import datetime
 
@@ -114,19 +115,41 @@ def process_packet(packet):
         if source_ip.startswith("127.") or destination_ip.startswith("127."):
             return
 
-        # 2. Check if source device exists in our database
-        dev = get_device_by_ip(source_ip)
+        # 2. Only register devices from the configured local network
+        try:
+            local_network = ipaddress.ip_network(config.TARGET_NETWORK, strict=False)
+            source_address = ipaddress.ip_address(source_ip)
+        except ValueError:
+            return
+
+        if source_address not in local_network:
+            try:
+                destination_address = ipaddress.ip_address(destination_ip)
+            except ValueError:
+                return
+
+            if destination_address not in local_network:
+                return
+
+            # Incoming traffic: associate with local destination
+            source_ip_for_device = destination_ip
+        else:
+            # Outgoing traffic: associate with local source
+            source_ip_for_device = source_ip
+
+        # Check if the associated local device exists
+        dev = get_device_by_ip(source_ip_for_device)
+
         if not dev:
-            # Auto-register newly active IP
             dev_id = add_or_update_device(
-                ip_address=source_ip,
+                ip_address=source_ip_for_device,
                 mac_address="AUTO-CAPTURED",
-                hostname=f"Host-{source_ip.split('.')[-1]}"
+                hostname=f"Host-{source_ip_for_device.split('.')[-1]}"
             )
         else:
             dev_id = dev["id"]
 
-        # 3. Log to NetGuardian's dashboard traffic telemetry table
+        # Log traffic using the ORIGINAL source and destination IPs
         log_traffic(
             device_id=dev_id,
             source_ip=source_ip,
@@ -137,8 +160,9 @@ def process_packet(packet):
             dns_query=dns_query,
             timestamp=timestamp
         )
-    except Exception:
-        pass
+
+    except Exception as e:
+        print(f"[PacketCapture] Packet processing error: {e}")
 
 
 def _sniff_worker(interface):
