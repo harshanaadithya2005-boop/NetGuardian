@@ -1,5 +1,6 @@
 import sys
 import subprocess
+import ipaddress
 from pathlib import Path
 from datetime import datetime
 
@@ -9,6 +10,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from database.models import set_device_status, log_quarantine, create_alert, get_device_by_id
+import config
 
 
 def apply_firewall_isolation(ip_address):
@@ -16,6 +18,14 @@ def apply_firewall_isolation(ip_address):
     Apply host/network firewall block rule for quarantined device.
     Attempts native Windows Firewall rule; falls back cleanly to simulated enforcement if non-admin.
     """
+    # DEMO mode: simulate isolation without changing Windows Firewall
+    if config.PROTECTION_MODE == "DEMO":
+        return (
+            False,
+            f"[DEMO MODE] Simulated quarantine for {ip_address}. "
+            "No Windows Firewall rules were created."
+        )
+
     rule_name_in = f"NetGuardian_Block_In_{ip_address}"
     rule_name_out = f"NetGuardian_Block_Out_{ip_address}"
     success = False
@@ -41,6 +51,11 @@ def apply_firewall_isolation(ip_address):
 
 def remove_firewall_isolation(ip_address):
     """Remove firewall isolation rules when a device is released."""
+
+    # DEMO mode: do not modify Windows Firewall
+    if config.PROTECTION_MODE == "DEMO":
+        return
+
     rule_name_in = f"NetGuardian_Block_In_{ip_address}"
     rule_name_out = f"NetGuardian_Block_Out_{ip_address}"
     try:
@@ -67,6 +82,24 @@ def quarantine_device(device_id, ip_address=None, reason="High Risk Score thresh
         else:
             return False, "Device not found"
 
+            # Safety check: Only quarantine devices on our local network
+    try:
+        local_network = ipaddress.ip_network(
+            config.TARGET_NETWORK, strict=False
+        )
+        device_ip = ipaddress.ip_address(ip_address)
+
+        if device_ip not in local_network:
+            return False, (
+                f"Quarantine blocked: {ip_address} is outside "
+                f"the local network {local_network}."
+            )
+
+    except ValueError:
+        return False, (
+            f"Quarantine blocked: Invalid IP address or network configuration."
+        )
+
     print(f"\n[QUARANTINE TRIGGERED] Isolating Device ID {device_id} ({ip_address})")
     print(f"Reason: {reason} | By: {performed_by}")
 
@@ -79,13 +112,25 @@ def quarantine_device(device_id, ip_address=None, reason="High Risk Score thresh
     # 3. Audit Log
     log_quarantine(device_id, action="quarantined", reason=f"{reason} | {net_msg}", performed_by=performed_by)
 
-    # 4. Critical Alert
+    # 4. Quarantine Alert
+    if config.PROTECTION_MODE == "DEMO":
+        alert_type = "quarantine_simulated"
+        alert_description = (
+            f"[DEMO MODE] Quarantine simulated for {ip_address}. "
+            f"Reason: {reason}. No firewall rules were applied."
+        )
+    else:
+        alert_type = "quarantine_enforced" if applied else "quarantine_failed"
+        alert_description = (
+            f"Device {ip_address}: {net_msg}. Reason: {reason}."
+        )
+
     create_alert(
         device_id=device_id,
-        alert_type="quarantine_enforced",
+        alert_type=alert_type,
         risk_score=95,
-        severity="CRITICAL",
-        description=f"Device {ip_address} has been QUARANTINED. {reason}."
+        severity="CRITICAL" if applied else "WARNING",
+        description=alert_description
     )
 
     return True, net_msg
