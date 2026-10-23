@@ -1,6 +1,18 @@
+import ipaddress
+import config
 from datetime import datetime
 from database.db import get_connection
 
+def is_local_device_ip(ip_address):
+    """Return True only for valid IP addresses in the configured network."""
+    try:
+        network = ipaddress.ip_network(
+            config.TARGET_NETWORK,
+            strict=False
+        )
+        return ipaddress.ip_address(ip_address) in network
+    except (ValueError, TypeError):
+        return False
 
 def add_or_update_device(
     ip_address,
@@ -376,26 +388,52 @@ def get_quarantine_logs(limit=20):
 
 
 def get_network_stats():
-    """Aggregate statistics for summary cards."""
+    """Aggregate statistics for the configured local network."""
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute("SELECT COUNT(*) FROM devices")
-    total_devices = cur.fetchone()[0]
 
-    cur.execute("SELECT COUNT(*) FROM devices WHERE status = 'online'")
-    online_devices = cur.fetchone()[0]
+    # Retrieve device records without deleting historical data
+    cur.execute("SELECT ip_address, status, risk_score FROM devices")
+    all_devices = cur.fetchall()
 
-    cur.execute("SELECT COUNT(*) FROM devices WHERE status = 'quarantined'")
-    quarantined_devices = cur.fetchone()[0]
+    local_devices = [
+        device for device in all_devices
+        if is_local_device_ip(device["ip_address"])
+    ]
 
-    cur.execute("SELECT COUNT(*) FROM alerts WHERE status = 'open'")
-    open_alerts = cur.fetchone()[0]
+    total_devices = len(local_devices)
 
-    cur.execute("SELECT COUNT(*) FROM devices WHERE risk_score >= 70")
-    high_risk_devices = cur.fetchone()[0]
+    online_devices = sum(
+        1 for device in local_devices
+        if device["status"] == "online"
+    )
+
+    quarantined_devices = sum(
+        1 for device in local_devices
+        if device["status"] == "quarantined"
+    )
+
+    high_risk_devices = sum(
+        1 for device in local_devices
+        if device["risk_score"] >= 70
+    )
+
+    # Preserve the existing global alert count for now
+    cur.execute("""
+        SELECT a.status, d.ip_address
+        FROM alerts a
+        JOIN devices d ON a.device_id = d.id
+        WHERE a.status = 'open'
+    """)
+
+    open_alerts = sum(
+        1 for alert in cur.fetchall()
+        if is_local_device_ip(alert["ip_address"])
+    )
 
     conn.close()
+
     return {
         "total_devices": total_devices,
         "online_devices": online_devices,
