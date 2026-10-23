@@ -1,9 +1,22 @@
 import os
 import sys
 import threading
+import csv
+import io
 import time
 import ipaddress
 from pathlib import Path
+from datetime import datetime
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle
+)
 # Ensure project root is in sys.path
 BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR) not in sys.path:
@@ -22,7 +35,10 @@ if venv_python.exists() and Path(sys.executable).resolve() != venv_python.resolv
         proc = subprocess.run([str(venv_python), str(BASE_DIR / "app.py")] + sys.argv[1:])
         sys.exit(proc.returncode)
 
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, redirect, Response
+from datetime import datetime
+from database.db import get_connection
+from ai.ai_engine import explain_alert
 
 import config
 from database.db import initialize_database
@@ -58,9 +74,470 @@ def is_local_ip(ip_address):
     except (ValueError, TypeError):
         return False
 
+
+@app.route("/alerts/<int:alert_id>/explain")
+def explain(alert_id):
+    """Generate or retrieve an AI explanation for a security alert."""
+
+    conn = get_connection()
+
+    try:
+        alert = conn.execute(
+            """
+            SELECT alerts.*, devices.ip_address
+            FROM alerts
+            JOIN devices ON alerts.device_id = devices.id
+            WHERE alerts.id = ?
+            """,
+            (alert_id,)
+        ).fetchone()
+
+        if alert is None:
+            return "Alert not found", 404
+
+        existing = conn.execute(
+            """
+            SELECT summary, recommendation
+            FROM ai_reports
+            WHERE alert_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (alert_id,)
+        ).fetchone()
+
+        if existing:
+            summary = existing["summary"]
+            recommendation = existing["recommendation"]
+            source = "Saved"
+        else:
+            summary, recommendation, source = explain_alert(
+                alert["alert_type"],
+                alert["severity"],
+                alert["risk_score"],
+                alert["description"],
+                alert["ip_address"]
+            )
+
+            conn.execute(
+                """
+                INSERT INTO ai_reports
+                (alert_id, summary, recommendation, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    alert_id,
+                    summary,
+                    recommendation,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                )
+            )
+
+            conn.commit()
+
+        return render_template(
+            "explain.html",
+            alert=alert,
+            summary=summary,
+            recommendation=recommendation,
+            source=source
+        )
+
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------
 # Web Dashboard HTML Routes
 # ---------------------------------------------------------
+
+@app.route("/devices")
+def devices_page():
+    devices = get_all_devices()
+    return render_template("devices.html", devices=devices)
+
+
+@app.route("/alerts")
+def alerts_page():
+    conn = get_connection()
+    try:
+        alerts = conn.execute("""
+            SELECT
+                alerts.*,
+                devices.ip_address
+            FROM alerts
+            LEFT JOIN devices
+                ON alerts.device_id = devices.id
+            ORDER BY alerts.timestamp DESC, alerts.id DESC
+        """).fetchall()
+    finally:
+        conn.close()
+
+    return render_template("alerts.html", alerts=alerts)
+
+
+
+@app.route("/alerts/<int:alert_id>/status", methods=["POST"])
+def update_alert_status(alert_id):
+
+    allowed_statuses = {"open", "resolved", "ignored"}
+    new_status = request.form.get("status", "").strip().lower()
+
+    if new_status not in allowed_statuses:
+        return "Invalid alert status", 400
+
+    conn = get_connection()
+    try:
+        existing = conn.execute(
+            "SELECT id FROM alerts WHERE id = ?",
+            (alert_id,)
+        ).fetchone()
+
+        if existing is None:
+            return "Alert not found", 404
+
+        conn.execute(
+            "UPDATE alerts SET status = ? WHERE id = ?",
+            (new_status, alert_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return redirect("/alerts")
+
+
+@app.route("/analytics")
+def analytics_page():
+    conn = get_connection()
+
+    try:
+        # 1. Daily network traffic usage
+        traffic_rows = conn.execute("""
+            SELECT
+                DATE(timestamp) AS day,
+                SUM(packet_size) AS total_bytes
+            FROM traffic
+            GROUP BY DATE(timestamp)
+            ORDER BY day ASC
+        """).fetchall()
+
+        traffic_labels = [row["day"] for row in traffic_rows]
+        traffic_values = [row["total_bytes"] for row in traffic_rows]
+
+        # 2. Network protocol distribution
+        protocol_rows = conn.execute("""
+            SELECT
+                protocol,
+                COUNT(*) AS total
+            FROM traffic
+            GROUP BY protocol
+            ORDER BY total DESC
+        """).fetchall()
+
+        proto_labels = [row["protocol"] for row in protocol_rows]
+        proto_values = [row["total"] for row in protocol_rows]
+
+        # 3. Alert severity distribution
+        risk_rows = conn.execute("""
+            SELECT
+                UPPER(severity) AS severity,
+                COUNT(*) AS total
+            FROM alerts
+            GROUP BY UPPER(severity)
+        """).fetchall()
+
+        risk_counts = {
+            row["severity"]: row["total"]
+            for row in risk_rows
+        }
+
+        risk_values = [
+            risk_counts.get("LOW", 0),
+            risk_counts.get("MEDIUM", 0),
+            risk_counts.get("HIGH", 0),
+            risk_counts.get("CRITICAL", 0)
+        ]
+
+    finally:
+        conn.close()
+
+    return render_template(
+        "analytics.html",
+        traffic_labels=traffic_labels,
+        traffic_values=traffic_values,
+        proto_labels=proto_labels,
+        proto_values=proto_values,
+        risk_values=risk_values
+    )
+
+
+@app.route("/reports")
+def reports_page():
+    conn = get_connection()
+
+    try:
+        # Total registered devices
+        total_devices = conn.execute(
+            "SELECT COUNT(*) FROM devices"
+        ).fetchone()[0]
+
+        # Total security alerts
+        total_alerts = conn.execute(
+            "SELECT COUNT(*) FROM alerts"
+        ).fetchone()[0]
+
+        # Devices not marked as trusted
+        unknown_devices = conn.execute(
+            "SELECT COUNT(*) FROM devices WHERE trusted = 0"
+        ).fetchone()[0]
+
+        # Highest recorded device risk score
+        highest_risk = conn.execute(
+            "SELECT COALESCE(MAX(risk_score), 0) FROM devices"
+        ).fetchone()[0]
+
+        # Device with the most recorded traffic
+        top_device_row = conn.execute("""
+            SELECT
+                devices.ip_address,
+                COALESCE(SUM(traffic.packet_size), 0) AS total_bytes
+            FROM devices
+            JOIN traffic
+                ON devices.id = traffic.device_id
+            GROUP BY devices.id, devices.ip_address
+            ORDER BY total_bytes DESC
+            LIMIT 1
+        """).fetchone()
+
+        if top_device_row:
+            top_device = (
+                f"{top_device_row['ip_address']} "
+                f"({top_device_row['total_bytes']:,} bytes)"
+            )
+        else:
+            top_device = "No traffic recorded"
+
+    finally:
+        conn.close()
+
+    return render_template(
+        "reports.html",
+        total_devices=total_devices,
+        total_alerts=total_alerts,
+        unknown_devices=unknown_devices,
+        highest_risk=highest_risk,
+        top_device=top_device
+    )
+
+
+@app.route("/reports/alerts.csv")
+def export_alerts_csv():
+    conn = get_connection()
+
+    try:
+        alerts = conn.execute("""
+            SELECT
+                alerts.id,
+                devices.ip_address,
+                alerts.alert_type,
+                alerts.risk_score,
+                alerts.severity,
+                alerts.description,
+                alerts.status,
+                alerts.timestamp
+            FROM alerts
+            LEFT JOIN devices
+                ON alerts.device_id = devices.id
+            ORDER BY alerts.timestamp DESC, alerts.id DESC
+        """).fetchall()
+    finally:
+        conn.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    writer.writerow([
+        "Alert ID",
+        "Device IP",
+        "Alert Type",
+        "Risk Score",
+        "Severity",
+        "Description",
+        "Status",
+        "Timestamp"
+    ])
+
+    for alert in alerts:
+        writer.writerow([
+            alert["id"],
+            alert["ip_address"],
+            alert["alert_type"],
+            alert["risk_score"],
+            alert["severity"],
+            alert["description"],
+            alert["status"],
+            alert["timestamp"]
+        ])
+
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={
+            "Content-Disposition": "attachment; filename=netguardian_alerts.csv"
+        }
+    )
+
+
+@app.route("/reports/report.pdf")
+def export_security_pdf():
+    # Create the PDF in memory without modifying the database
+    buffer = io.BytesIO()
+
+    conn = get_connection()
+    try:
+        total_devices = conn.execute(
+            "SELECT COUNT(*) FROM devices"
+        ).fetchone()[0]
+
+        total_alerts = conn.execute(
+            "SELECT COUNT(*) FROM alerts"
+        ).fetchone()[0]
+
+        open_alerts = conn.execute(
+            "SELECT COUNT(*) FROM alerts WHERE status = 'open'"
+        ).fetchone()[0]
+
+        highest_risk = conn.execute(
+            "SELECT COALESCE(MAX(risk_score), 0) FROM devices"
+        ).fetchone()[0]
+
+        alerts = conn.execute("""
+            SELECT
+                alerts.id,
+                devices.ip_address,
+                alerts.alert_type,
+                alerts.severity,
+                alerts.risk_score,
+                alerts.status,
+                alerts.timestamp
+            FROM alerts
+            LEFT JOIN devices
+                ON alerts.device_id = devices.id
+            ORDER BY alerts.timestamp DESC, alerts.id DESC
+            LIMIT 20
+        """).fetchall()
+
+        # Convert database rows into plain values before closing
+        alert_rows = [
+            [
+                str(a["id"]),
+                str(a["ip_address"] or "Unknown"),
+                str(a["alert_type"]),
+                str(a["severity"]),
+                str(a["risk_score"]),
+                str(a["status"])
+            ]
+            for a in alerts
+        ]
+    finally:
+        conn.close()
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=30,
+        leftMargin=30,
+        topMargin=35,
+        bottomMargin=35
+    )
+
+    styles = getSampleStyleSheet()
+    elements = []
+
+    elements.append(
+        Paragraph("NetGuardian - Security Report", styles["Title"])
+    )
+
+    elements.append(Spacer(1, 12))
+
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    elements.append(
+        Paragraph(f"Generated: {generated_at}", styles["Normal"])
+    )
+
+    elements.append(Spacer(1, 20))
+
+    elements.append(
+        Paragraph("Network Security Overview", styles["Heading2"])
+    )
+
+    summary_data = [
+        ["Metric", "Value"],
+        ["Total Devices", str(total_devices)],
+        ["Total Alerts", str(total_alerts)],
+        ["Open Alerts", str(open_alerts)],
+        ["Highest Device Risk", f"{highest_risk}/100"]
+    ]
+
+    summary_table = Table(summary_data, colWidths=[240, 160])
+
+    summary_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
+        ("TOPPADDING", (0, 0), (-1, 0), 10),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE")
+    ]))
+
+    elements.append(summary_table)
+    elements.append(Spacer(1, 24))
+
+    elements.append(
+        Paragraph("Recent Security Alerts", styles["Heading2"])
+    )
+
+    alert_data = [
+        ["ID", "Device IP", "Alert Type", "Severity", "Risk", "Status"]
+    ]
+
+    alert_data.extend(alert_rows)
+
+    if not alert_rows:
+        alert_data.append(["-", "No alerts", "-", "-", "-", "-"])
+
+    alerts_table = Table(
+        alert_data,
+        colWidths=[35, 95, 125, 75, 45, 75],
+        repeatRows=1
+    )
+
+    alerts_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+         [colors.white, colors.HexColor("#f1f5f9")])
+    ]))
+
+    elements.append(alerts_table)
+
+    doc.build(elements)
+    buffer.seek(0)
+
+    return Response(
+        buffer.getvalue(),
+        mimetype="application/pdf",
+        headers={
+            "Content-Disposition":
+                "attachment; filename=NetGuardian_Security_Report.pdf"
+        }
+    )
+
+
 
 @app.route("/")
 def index():
@@ -210,6 +687,16 @@ def api_simulate(attack_type):
         return jsonify({"status": "error", "message": f"Unknown attack type: {attack_type}"}), 400
 
     return jsonify({"status": "success", "message": msg})
+
+
+@app.route("/api/simulate/history", methods=["GET"])
+def api_simulation_history():
+    """Return demonstration events without accessing the real database."""
+    return jsonify({
+        "status": "success",
+        "simulation": True,
+        "events": sim.get_simulation_history()
+    })
 
 
 # ---------------------------------------------------------

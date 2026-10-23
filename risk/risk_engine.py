@@ -74,8 +74,14 @@ def evaluate_device_risk(device_or_id, auto_quarantine=True):
     trusted = bool(device.get("trusted", 0))
     current_status = device.get("status", "online")
 
-    # Fetch recent traffic associated with this device
-    traffic = get_recent_traffic(limit=100, device_id=device_id)
+    # Evaluate only traffic observed within the last 30 minutes.
+    # Historical traffic remains available for analytics and reports.
+    traffic = get_recent_traffic(
+        limit=100,
+        device_id=device_id,
+        minutes=30,
+        is_simulated=False
+    )
 
     active_indicators = []
     detection_results = []
@@ -108,7 +114,19 @@ def evaluate_device_risk(device_or_id, auto_quarantine=True):
         )
 
     # 3. DNS Anomaly Detection
-    res_dns = check_dns_anomaly(traffic, source_ip=ip_address)
+    # DNS query volume uses a one-minute window.
+    # Port scanning and behaviour detection retain the 30-minute window.
+    dns_traffic = get_recent_traffic(
+        limit=1000,
+        device_id=device_id,
+        minutes=1,
+        is_simulated=False
+    )
+
+    res_dns = check_dns_anomaly(
+        dns_traffic,
+        source_ip=ip_address
+    )
     if res_dns.get("detected"):
         active_indicators.append("dns_anomaly")
         detection_results.append(res_dns)

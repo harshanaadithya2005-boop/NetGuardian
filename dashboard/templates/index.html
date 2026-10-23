@@ -79,7 +79,7 @@
     <div class="panel-header">
         <div>
             <h3><i class="fa-solid fa-flask-vial"></i> Attack Simulation & Demonstration Lab</h3>
-            <p class="panel-subtitle">Inject live attack vectors into the NetGuardian engine to test real-time detection, behaviour drift, and automatic quarantine.</p>
+            <p class="panel-subtitle">Run isolated fictional attack scenarios. Results appear below and do not change real devices, alerts, or traffic records.</p>
         </div>
         <button class="btn btn-sm btn-outline-danger" onclick="triggerSimulation('reset')">
             <i class="fa-solid fa-rotate-left"></i> Reset Simulation
@@ -93,14 +93,27 @@
             <i class="fa-solid fa-globe"></i> Simulate DNS Anomaly (+20 Risk)
         </button>
         <button class="btn btn-sim" onclick="triggerSimulation('traffic_spike')">
-            <i class="fa-solid fa-chart-line-up"></i> Simulate Traffic Spike & Drift (+30 Risk)
+            <i class="fa-solid fa-chart-line-up"></i> Simulate Traffic Spike (+15 Risk)
         </button>
         <button class="btn btn-sim" onclick="triggerSimulation('rogue_device')">
             <i class="fa-solid fa-user-secret"></i> Inject Rogue Device (+20 Risk)
         </button>
         <button class="btn btn-sim btn-danger-glow" onclick="triggerSimulation('critical_attack')">
-            <i class="fa-solid fa-skull-crossbones"></i> Full Attack (Triggers Quarantine)
+            <i class="fa-solid fa-skull-crossbones"></i> Full Attack (Simulated Quarantine)
         </button>
+    </div>
+    <div class="simulation-results" aria-live="polite">
+        <div class="simulation-results-header">
+            <strong>Simulation Results &amp; History</strong>
+            <span class="simulation-demo-label">ISOLATED DEMO</span>
+        </div>
+        <p id="simulation-feedback" class="simulation-feedback">Run a scenario to see its result here.</p>
+        <div class="simulation-table-wrap">
+            <table class="simulation-history-table">
+                <thead><tr><th>Time</th><th>Scenario</th><th>Risk</th><th>Severity</th><th>Would quarantine?</th></tr></thead>
+                <tbody id="simulation-history-body"><tr><td colspan="5">No simulation events yet.</td></tr></tbody>
+            </table>
+        </div>
     </div>
 </section>
 
@@ -138,11 +151,21 @@
                         <td><small>{{ dev.mac_address or 'N/A' }}</small></td>
                         <td><span class="device-tag">{{ dev.device_type or 'General' }}</span></td>
                         <td>
-                            {% if dev.status == 'quarantined' %}
-                            <span class="badge badge-danger"><i class="fa-solid fa-ban"></i> Quarantined</span>
-                            {% else %}
-                            <span class="badge badge-success"><i class="fa-solid fa-check"></i> Online</span>
-                            {% endif %}
+
+{% if dev.status == 'quarantined' %}
+<span class="badge badge-danger">
+    <i class="fa-solid fa-ban"></i> Quarantined
+</span>
+{% elif dev.status == 'online' %}
+<span class="badge badge-success">
+    <i class="fa-solid fa-check"></i> Online
+</span>
+{% else %}
+<span class="badge badge-secondary">
+    <i class="fa-solid fa-circle-minus"></i> Offline
+</span>
+{% endif %}
+
                         </td>
                         <td>
                             <div class="risk-bar-container">

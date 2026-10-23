@@ -44,13 +44,28 @@ def check_dns_anomaly(dns_queries_or_traffic, failed_queries=0, source_ip=None, 
 
     # Extract domains whether passed as list of strings or traffic record dicts
     queries = []
+
     if dns_queries_or_traffic:
         if isinstance(dns_queries_or_traffic[0], dict):
-            queries = [r.get("dns_query") for r in dns_queries_or_traffic if r.get("dns_query")]
-            if not source_ip and dns_queries_or_traffic:
-                source_ip = dns_queries_or_traffic[0].get("source_ip")
+            records = dns_queries_or_traffic
+
+            # Only examine queries originating from this device.
+            if source_ip:
+                records = [
+                    r for r in records
+                    if r.get("source_ip") == source_ip
+                ]
+
+            queries = [
+                r.get("dns_query")
+                for r in records
+                if r.get("dns_query")
+            ]
         else:
-            queries = [str(q) for q in dns_queries_or_traffic if q]
+            queries = [
+                str(q) for q in dns_queries_or_traffic if q
+            ]
+
 
     anomalies = []
 

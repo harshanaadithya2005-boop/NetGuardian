@@ -47,6 +47,7 @@ def initialize_database():
             packet_size INTEGER DEFAULT 0,
             dns_query TEXT,
             timestamp TEXT NOT NULL,
+            is_simulated INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
         );
 
@@ -94,6 +95,21 @@ def initialize_database():
         CREATE INDEX IF NOT EXISTS idx_alerts_device ON alerts(device_id);
         CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status);
     """)
+
+
+    # Member 3: AI-generated security reports
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ai_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            alert_id INTEGER NOT NULL,
+            summary TEXT,
+            recommendation TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (alert_id) REFERENCES alerts(id)
+        )
+    """)
+
+
 
     connection.commit()
     connection.close()

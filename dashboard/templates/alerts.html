@@ -1,0 +1,65 @@
+
+{% extends "base.html" %}
+
+{% block content %}
+<h2>Security Alerts</h2>
+
+<div class="panel">
+    <table>
+        <thead>
+            <tr>
+                <th>Alert</th>
+                <th>Device IP</th>
+                <th>Risk</th>
+                <th>Severity</th>
+                <th>Status</th>
+                <th>Time</th>
+                <th>AI Explanation</th>
+            </tr>
+        </thead>
+
+        <tbody>
+            {% for a in alerts %}
+            <tr>
+                <td>{{ a['alert_type'] }}</td>
+                <td>{{ a['ip_address'] }}</td>
+                <td>{{ a['risk_score'] }}</td>
+
+                <td>
+                    <span class="badge {{ a['severity']|lower }}">
+                        {{ a['severity'] }}
+                    </span>
+                </td>
+
+                <td>
+                    <form method="post"
+                          action="/alerts/{{ a['id'] }}/status">
+                        <select name="status">
+                            {% for s in ['open', 'resolved', 'ignored'] %}
+                            <option value="{{ s }}"
+                                {% if a['status'] == s %}selected{% endif %}>
+                                {{ s|title }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                        <button type="submit">Save</button>
+                    </form>
+                </td>
+
+                <td>{{ a['timestamp'] }}</td>
+
+                <td>
+                    <a href="/alerts/{{ a['id'] }}/explain">
+                        <button type="button">Explain</button>
+                    </a>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="7">No security alerts found.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

@@ -510,3 +510,13 @@ code {
     border-top: 1px solid var(--border-color);
     margin-top: 30px;
 }
+
+/* Safe demonstration history panel */
+.simulation-results { margin-top: 18px; border-top: 1px solid var(--border-color); padding-top: 16px; }
+.simulation-results-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.simulation-demo-label { font-size: 11px; font-weight: 700; color: var(--accent-cyan); }
+.simulation-feedback { margin: 0 0 12px; color: var(--text-secondary); font-size: 13px; overflow-wrap: anywhere; }
+.simulation-table-wrap { overflow-x: auto; }
+.simulation-history-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.simulation-history-table th, .simulation-history-table td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--border-color); }
+.simulation-history-table th { color: var(--text-secondary); font-weight: 600; white-space: nowrap; }

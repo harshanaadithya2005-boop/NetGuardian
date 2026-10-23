@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Analytics</h2>
+
+<div class="panel">
+  <h3>Traffic Usage (bytes per day)</h3>
+  <canvas id="trafficChart" height="90"></canvas>
+</div>
+
+<div style="display:flex; gap:16px; flex-wrap:wrap;">
+  <div class="panel" style="flex:1; min-width:300px;">
+    <h3>Protocol Usage</h3>
+    <canvas id="protoChart"></canvas>
+  </div>
+  <div class="panel" style="flex:1; min-width:300px;">
+    <h3>Risk Levels</h3>
+    <canvas id="riskChart"></canvas>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+  new Chart(document.getElementById('trafficChart'), {
+    type: 'line',
+    data: {
+      labels: {{ traffic_labels|tojson }},
+      datasets: [{ label: 'Bytes', data: {{ traffic_values|tojson }}, borderColor: '#38bdf8', tension: 0.3 }]
+    }
+  });
+
+  new Chart(document.getElementById('protoChart'), {
+    type: 'doughnut',
+    data: {
+      labels: {{ proto_labels|tojson }},
+      datasets: [{ data: {{ proto_values|tojson }}, backgroundColor: ['#38bdf8', '#a78bfa', '#f59e0b', '#94a3b8', '#34d399'] }]
+    }
+  });
+
+  new Chart(document.getElementById('riskChart'), {
+    type: 'bar',
+    data: {
+      labels: ['Low', 'Medium', 'High', 'Critical'],
+      datasets: [{ label: 'Alerts', data: {{ risk_values|tojson }}, backgroundColor: ['#16a34a', '#eab308', '#ea580c', '#dc2626'] }]
+    },
+    options: { scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }
+  });
+</script>
+{% endblock %}

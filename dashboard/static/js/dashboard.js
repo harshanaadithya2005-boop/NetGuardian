@@ -62,17 +62,62 @@ async function resolveAlert(alertId) {
     }
 }
 
-async function triggerSimulation(attackType) {
-    showToast(`Injecting scenario: ${attackType.replace('_', ' ')}...`);
-    try {
-        const res = await fetch(`/api/simulate/${attackType}`, { method: "POST" });
-        const data = await res.json();
-        showToast(data.message);
-        setTimeout(() => location.reload(), 1200);
-    } catch (e) {
-        showToast("Simulation error: " + e, true);
+function renderSimulationHistory(events) {
+    const tbody = document.getElementById("simulation-history-body");
+    if (!tbody) return;
+    tbody.replaceChildren();
+    if (!events.length) {
+        const row = tbody.insertRow();
+        const cell = row.insertCell();
+        cell.colSpan = 5;
+        cell.textContent = "No simulation events yet.";
+        return;
+    }
+    for (const event of [...events].reverse()) {
+        const row = tbody.insertRow();
+        const fields = [
+            event.timestamp || "—",
+            (event.scenario || "unknown").replaceAll("_", " "),
+            `${event.risk_score ?? "—"}/100`,
+            event.risk_level || "—",
+            event.would_quarantine ? "YES (demo only)" : "No"
+        ];
+        for (const value of fields) row.insertCell().textContent = value;
     }
 }
+
+async function loadSimulationHistory() {
+    const feedback = document.getElementById("simulation-feedback");
+    if (!feedback) return;
+    try {
+        const res = await fetch("/api/simulate/history", { cache: "no-store" });
+        const data = await res.json();
+        if (!res.ok || data.status !== "success") throw new Error(data.message || `HTTP ${res.status}`);
+        renderSimulationHistory(data.events || []);
+    } catch (error) {
+        feedback.textContent = `Could not load simulation history: ${error.message}`;
+    }
+}
+
+async function triggerSimulation(attackType) {
+    const feedback = document.getElementById("simulation-feedback");
+    if (feedback) feedback.textContent = `Running ${attackType.replaceAll("_", " ")}...`;
+    try {
+        const res = await fetch(`/api/simulate/${encodeURIComponent(attackType)}`, { method: "POST" });
+        const data = await res.json();
+        if (!res.ok || data.status !== "success") throw new Error(data.message || `HTTP ${res.status}`);
+        if (feedback) feedback.textContent = data.message;
+        showToast(data.message);
+        await loadSimulationHistory();
+        // Do not reload: results should remain visible and real-device stats are unchanged.
+    } catch (error) {
+        const message = `Simulation error: ${error.message}`;
+        if (feedback) feedback.textContent = message;
+        showToast(message, true);
+    }
+}
+
+document.addEventListener("DOMContentLoaded", loadSimulationHistory);
 
 // Background telemetry updater
 async function updateStats() {
