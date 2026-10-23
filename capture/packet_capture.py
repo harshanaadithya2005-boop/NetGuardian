@@ -146,10 +146,12 @@ def process_packet(packet):
         source_port = None
         destination_port = None
         dns_query = None
+        tcp_flags = None
 
         if packet.haslayer(TCP):
             source_port = packet[TCP].sport
             destination_port = packet[TCP].dport
+            tcp_flags = str(packet[TCP].flags)
 
         elif packet.haslayer(UDP):
             source_port = packet[UDP].sport
@@ -182,8 +184,11 @@ def process_packet(packet):
                 packet_size=packet_size,
                 timestamp=timestamp
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print(
+                f"[PacketCapture] save_traffic_record failed: "
+                f"{type(e).__name__}: {e}"
+            )
 
         # Ignore loopback traffic in the core device database.
         if (
@@ -274,7 +279,8 @@ def process_packet(packet):
             destination_port=destination_port,
             packet_size=packet_size,
             dns_query=dns_query,
-            timestamp=timestamp
+            timestamp=timestamp,
+            tcp_flags=tcp_flags
         )
 
     except Exception as e:

@@ -51,7 +51,7 @@ def get_risk_level(score):
         return "HIGH"
 
 
-def evaluate_device_risk(device_or_id, auto_quarantine=True):
+def evaluate_device_risk(device_or_id, auto_quarantine=False):
     """
     Complete detection-to-response pipeline for a device:
     1. Fetch device info and recent network traffic.
@@ -97,7 +97,7 @@ def evaluate_device_risk(device_or_id, auto_quarantine=True):
                 alert_type="unknown_device",
                 risk_score=config.RISK_WEIGHTS.get("unknown_device", 20),
                 severity="MEDIUM",
-                description=f"Device {ip_address} is untrusted/unknown on the network."
+                description=res_unknown.get("message", f"Untrusted device: {ip_address}")
             )
 
     # 2. Port Scan Detection
@@ -208,12 +208,39 @@ def evaluate_device_risk(device_or_id, auto_quarantine=True):
     }
 
 
-def evaluate_all_devices(auto_quarantine=True):
-    """Run full risk evaluation for all devices currently stored in the database."""
+def evaluate_all_devices(auto_quarantine=False):
+    """Evaluate only devices belonging to the configured local network."""
+
     devices = get_all_devices()
     evaluations = []
+
+    local_network = ipaddress.ip_network(
+        config.TARGET_NETWORK,
+        strict=False
+    )
+
     for dev in devices:
-        evaluations.append(evaluate_device_risk(dev, auto_quarantine=auto_quarantine))
+        ip_address = dev.get("ip_address")
+
+        if not ip_address:
+            continue
+
+        try:
+            device_ip = ipaddress.ip_address(ip_address)
+        except ValueError:
+            continue
+
+        if device_ip not in local_network:
+            continue
+
+        result = evaluate_device_risk(
+            dev,
+            auto_quarantine=auto_quarantine
+        )
+
+        if result is not None:
+            evaluations.append(result)
+
     return evaluations
 
 

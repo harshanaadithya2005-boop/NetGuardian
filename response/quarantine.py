@@ -100,6 +100,14 @@ def quarantine_device(device_id, ip_address=None, reason="High Risk Score thresh
             f"Quarantine blocked: Invalid IP address or network configuration."
         )
 
+    # Protect the network gateway from accidental quarantine.
+    # This check applies to both DEMO and enforcement modes.
+    if ip_address == "192.168.8.1":
+        return False, (
+            "Quarantine blocked: the network gateway requires "
+            "separate administrator approval."
+        )
+
     print(f"\n[QUARANTINE TRIGGERED] Isolating Device ID {device_id} ({ip_address})")
     print(f"Reason: {reason} | By: {performed_by}")
 

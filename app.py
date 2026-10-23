@@ -1,3 +1,5 @@
+from flask import url_for
+
 import os
 import sys
 import threading
@@ -159,17 +161,17 @@ def devices_page():
 
 @app.route("/alerts")
 def alerts_page():
+    reset_id = get_alert_reset_id()
     conn = get_connection()
+
     try:
         alerts = conn.execute("""
-            SELECT
-                alerts.*,
-                devices.ip_address
+            SELECT alerts.*, devices.ip_address
             FROM alerts
-            LEFT JOIN devices
-                ON alerts.device_id = devices.id
+            LEFT JOIN devices ON alerts.device_id = devices.id
+            WHERE alerts.id > ?
             ORDER BY alerts.timestamp DESC, alerts.id DESC
-        """).fetchall()
+        """, (reset_id,)).fetchall()
     finally:
         conn.close()
 
@@ -206,7 +208,65 @@ def update_alert_status(alert_id):
 
     return redirect("/alerts")
 
+@app.route("/alerts/reset", methods=["POST"])
+def reset_alerts():
+    """Archive current alerts and hide them from the active views."""
+    conn = get_connection()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS alert_reset_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                last_cleared_id INTEGER NOT NULL DEFAULT 0
+            )
+        """)
 
+        latest_id = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM alerts"
+        ).fetchone()[0]
+
+        conn.execute("""
+            UPDATE alerts
+            SET status = 'ignored'
+            WHERE id <= ? AND status = 'open'
+        """, (latest_id,))
+
+        conn.execute("""
+            INSERT INTO alert_reset_state (id, last_cleared_id)
+            VALUES (1, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                last_cleared_id = excluded.last_cleared_id
+        """, (latest_id,))
+
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    return redirect("/alerts")
+
+
+def get_alert_reset_id():
+    """Return the ID of the last alert cleared."""
+    conn = get_connection()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS alert_reset_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                last_cleared_id INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        row = conn.execute("""
+            SELECT last_cleared_id
+            FROM alert_reset_state
+            WHERE id = 1
+        """).fetchone()
+        return row[0] if row else 0
+    finally:
+        conn.close()
+
+@app.route("/analytics")
 @app.route("/analytics")
 def analytics_page():
     conn = get_connection()
@@ -238,7 +298,7 @@ def analytics_page():
         proto_labels = [row["protocol"] for row in protocol_rows]
         proto_values = [row["total"] for row in protocol_rows]
 
-        # 3. Alert severity distribution
+        # 3. Historical alert severity distribution
         risk_rows = conn.execute("""
             SELECT
                 UPPER(severity) AS severity,
@@ -262,18 +322,41 @@ def analytics_page():
     finally:
         conn.close()
 
+    # 4. Current risk levels of local network devices
+    local_devices = [
+        device for device in get_all_devices()
+        if is_local_ip(device.get("ip_address"))
+    ]
+
+    device_risk_counts = {
+        "LOW": 0,
+        "MEDIUM": 0,
+        "HIGH": 0
+    }
+
+    for device in local_devices:
+        score = int(device.get("risk_score") or 0)
+        level = get_risk_level(score)
+        device_risk_counts[level] += 1
+
+    device_risk_values = [
+        device_risk_counts["LOW"],
+        device_risk_counts["MEDIUM"],
+        device_risk_counts["HIGH"]
+    ]
+
     return render_template(
         "analytics.html",
         traffic_labels=traffic_labels,
         traffic_values=traffic_values,
         proto_labels=proto_labels,
         proto_values=proto_values,
-        risk_values=risk_values
+        risk_values=risk_values,
+        device_risk_values=device_risk_values
     )
-
-
-@app.route("/reports")
-def reports_page():
+    total_devices = conn.execute(
+        "SELECT COUNT(*) FROM devices"
+    ).fetchone()[0]
     conn = get_connection()
 
     try:
@@ -287,11 +370,18 @@ def reports_page():
             "SELECT COUNT(*) FROM alerts"
         ).fetchone()[0]
 
-        # Devices not marked as trusted
-        unknown_devices = conn.execute(
-            "SELECT COUNT(*) FROM devices WHERE trusted = 0"
-        ).fetchone()[0]
+        # Count only registered devices within our local network.
+        local_devices = [
+            device for device in get_all_devices()
+            if is_local_ip(device.get("ip_address"))
+        ]
 
+        total_devices = len(local_devices)
+
+        unknown_devices = sum(
+            1 for device in local_devices
+            if not bool(device.get("trusted", 0))
+        )
         # Highest recorded device risk score
         highest_risk = conn.execute(
             "SELECT COALESCE(MAX(risk_score), 0) FROM devices"
@@ -329,6 +419,96 @@ def reports_page():
         highest_risk=highest_risk,
         top_device=top_device
     )
+
+
+@app.route("/reports")
+def reports_page():
+    """Display NetGuardian security report summary."""
+
+    local_devices = [
+        device for device in get_all_devices()
+        if is_local_ip(device.get("ip_address"))
+    ]
+
+    total_devices = len(local_devices)
+
+    unknown_devices = sum(
+        1 for device in local_devices
+        if not bool(device.get("trusted", 0))
+    )
+
+    highest_risk = max(
+        (int(device.get("risk_score") or 0) for device in local_devices),
+        default=0
+    )
+
+    # ID of the most recently reset alert
+    reset_id = get_alert_reset_id()
+
+    conn = get_connection()
+
+    try:
+        # All alerts ever recorded, including cleared alerts
+        total_alerts = conn.execute(
+            "SELECT COUNT(*) FROM alerts"
+        ).fetchone()[0]
+
+        # New alerts received after the last reset
+        new_alerts = conn.execute("""
+            SELECT COUNT(*)
+            FROM alerts
+            WHERE id > ?
+        """, (reset_id,)).fetchone()[0]
+
+        # Currently open alerts received after the last reset
+        active_alerts = conn.execute("""
+            SELECT COUNT(*)
+            FROM alerts
+            WHERE id > ? AND status = ?
+        """, (reset_id, "open")).fetchone()[0]
+
+        # Older alerts retained for investigation
+        historical_alerts = conn.execute("""
+            SELECT COUNT(*)
+            FROM alerts
+            WHERE id <= ?
+        """, (reset_id,)).fetchone()[0]
+
+        traffic_rows = conn.execute("""
+            SELECT
+                devices.ip_address,
+                COALESCE(SUM(traffic.packet_size), 0) AS total_bytes
+            FROM devices
+            JOIN traffic ON devices.id = traffic.device_id
+            GROUP BY devices.id, devices.ip_address
+            ORDER BY total_bytes DESC
+        """).fetchall()
+
+        top_device = "No traffic recorded"
+
+        for row in traffic_rows:
+            if is_local_ip(row["ip_address"]):
+                top_device = (
+                    f"{row['ip_address']} "
+                    f"({row['total_bytes']:,} bytes)"
+                )
+                break
+
+    finally:
+        conn.close()
+
+    return render_template(
+        "reports.html",
+        total_devices=total_devices,
+        total_alerts=total_alerts,
+        new_alerts=new_alerts,
+        active_alerts=active_alerts,
+        historical_alerts=historical_alerts,
+        unknown_devices=unknown_devices,
+        highest_risk=highest_risk,
+        top_device=top_device
+    )
+
 
 
 @app.route("/reports/alerts.csv")
@@ -396,10 +576,12 @@ def export_security_pdf():
 
     conn = get_connection()
     try:
-        total_devices = conn.execute(
-            "SELECT COUNT(*) FROM devices"
-        ).fetchone()[0]
+        local_devices = [
+            device for device in get_all_devices()
+            if is_local_ip(device.get("ip_address"))
+        ]
 
+        total_devices = len(local_devices)
         total_alerts = conn.execute(
             "SELECT COUNT(*) FROM alerts"
         ).fetchone()[0]
@@ -408,9 +590,10 @@ def export_security_pdf():
             "SELECT COUNT(*) FROM alerts WHERE status = 'open'"
         ).fetchone()[0]
 
-        highest_risk = conn.execute(
-            "SELECT COALESCE(MAX(risk_score), 0) FROM devices"
-        ).fetchone()[0]
+        highest_risk = max(
+            (int(device.get("risk_score") or 0) for device in local_devices),
+            default=0
+        )
 
         alerts = conn.execute("""
             SELECT
@@ -495,7 +678,7 @@ def export_security_pdf():
     elements.append(Spacer(1, 24))
 
     elements.append(
-        Paragraph("Recent Security Alerts", styles["Heading2"])
+        Paragraph("Recent Historical Security Alerts", styles["Heading2"])
     )
 
     alert_data = [
@@ -549,9 +732,12 @@ def index():
         device for device in get_all_devices()
         if is_local_ip(device.get("ip_address"))
     ]
+    reset_id = get_alert_reset_id()
+
     alerts = [
         alert for alert in get_recent_alerts(limit=1000)
-        if is_local_ip(alert.get("ip_address"))
+        if alert["id"] > reset_id
+        and is_local_ip(alert.get("ip_address"))
     ][:25]
     traffic = get_recent_traffic(limit=25)
 
@@ -563,6 +749,43 @@ def index():
         traffic=traffic,
         protection_mode=config.PROTECTION_MODE
     )
+
+
+@app.route("/device/<int:device_id>/trust", methods=["POST"])
+def update_device_trust(device_id):
+    """Manually trust or untrust a known device."""
+
+    trusted_value = request.form.get("trusted")
+
+    if trusted_value not in ("0", "1"):
+        return "Invalid trust value", 400
+
+    conn = get_connection()
+
+    try:
+        existing = conn.execute(
+            "SELECT id FROM devices WHERE id = ?",
+            (device_id,)
+        ).fetchone()
+
+        if existing is None:
+            return "Device not found", 404
+
+        conn.execute(
+            "UPDATE devices SET trusted = ? WHERE id = ?",
+            (int(trusted_value), device_id)
+        )
+
+        conn.commit()
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
+
+    return redirect(url_for("device_detail", device_id=device_id))
 
 
 @app.route("/device/<int:device_id>")
@@ -603,8 +826,14 @@ def api_devices():
 
 @app.route("/api/alerts", methods=["GET"])
 def api_alerts():
-    """Return recent security alerts."""
-    return jsonify(get_recent_alerts(limit=50))
+    reset_id = get_alert_reset_id()
+
+    alerts = [
+        alert for alert in get_recent_alerts(limit=1000)
+        if alert["id"] > reset_id
+    ]
+
+    return jsonify(alerts[:50])
 
 
 @app.route("/api/traffic", methods=["GET"])
@@ -704,12 +933,26 @@ def api_simulation_history():
 # ---------------------------------------------------------
 
 def background_threat_monitor():
-    """Periodically evaluate network device risk scores and maintain detection state."""
+    """Periodically evaluate device risk without automatic quarantine."""
     while True:
         try:
-            evaluate_all_devices(auto_quarantine=True)
-        except Exception:
-            pass
+            print("[ThreatMonitor] Starting risk evaluation...", flush=True)
+
+            result = evaluate_all_devices(auto_quarantine=False)
+
+            print(
+                f"[ThreatMonitor] Risk evaluation completed: {result}",
+                flush=True
+            )
+
+        except Exception as e:
+            import traceback
+            print(
+                f"[ThreatMonitor] ERROR: {type(e).__name__}: {e}",
+                flush=True
+            )
+            traceback.print_exc()
+
         time.sleep(15)
 
 

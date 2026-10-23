@@ -147,3 +147,77 @@ async function updateStats() {
 
 // Auto-refresh counters every 5 seconds
 setInterval(updateStats, 5000);
+
+
+// Refresh live network traffic every 5 seconds.
+async function updateLiveTraffic() {
+    const tbody = document.getElementById("traffic-table-body");
+    if (!tbody) return;
+
+    try {
+        const response = await fetch("/api/traffic", {
+            cache: "no-store"
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const traffic = await response.json();
+
+        if (!Array.isArray(traffic)) {
+            throw new Error("Unexpected traffic API response");
+        }
+
+        // Build rows safely without injecting raw network data as HTML.
+        const fragment = document.createDocumentFragment();
+
+        function addCell(row, value) {
+            const cell = document.createElement("td");
+            cell.textContent = String(value ?? "-");
+            row.appendChild(cell);
+        }
+
+        for (const packet of traffic.slice(0, 25)) {
+            const row = document.createElement("tr");
+
+            const timestamp = packet.timestamp || "";
+            const displayTime = timestamp.includes("T")
+                ? timestamp.split("T")[1]
+                : timestamp;
+
+            addCell(row, displayTime);
+            addCell(
+                row,
+                `${packet.source_ip || "-"} (${packet.device_name || "Host"})`
+            );
+            addCell(row, packet.destination_ip || "-");
+            addCell(row, packet.protocol || "-");
+            addCell(row, packet.destination_port ?? "-");
+            addCell(row, packet.dns_query || "-");
+            addCell(row, `${packet.packet_size ?? 0} B`);
+
+            fragment.appendChild(row);
+        }
+
+        if (traffic.length === 0) {
+            const row = document.createElement("tr");
+            const cell = document.createElement("td");
+            cell.colSpan = 7;
+            cell.textContent = "No traffic records available.";
+            row.appendChild(cell);
+            fragment.appendChild(row);
+        }
+
+        tbody.replaceChildren(fragment);
+
+    } catch (error) {
+        console.error("[NetGuardian] Live traffic refresh failed:", error);
+    }
+}
+
+// Start refreshing once the page is ready.
+document.addEventListener("DOMContentLoaded", () => {
+    updateLiveTraffic();
+    setInterval(updateLiveTraffic, 5000);
+});

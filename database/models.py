@@ -234,26 +234,110 @@ def add_or_update_device(
 
 
 def mark_missing_devices_offline(discovered_ips):
-    """Mark devices not found in the latest scan as offline (excluding quarantined ones)."""
+    """
+    Mark devices offline only after 3 consecutive missed scans.
+
+    - A detected device has its missed-scan count reset to 0.
+    - An undetected device has its missed-scan count increased.
+    - A device is marked offline after 3 missed scans.
+    - Quarantined devices remain quarantined.
+    - Only devices within TARGET_NETWORK are evaluated.
+    """
+
+    import ipaddress
+    import config
+
     connection = get_connection()
-    cursor = connection.cursor()
 
-    cursor.execute("SELECT ip_address, status FROM devices")
-    stored_devices = cursor.fetchall()
+    try:
+        cursor = connection.cursor()
 
-    for device in stored_devices:
-        ip_address = device["ip_address"]
-        status = device["status"]
+        # Add persistent missed-scan counter if necessary.
+        columns = {
+            row["name"]
+            for row in cursor.execute(
+                "PRAGMA table_info(devices)"
+            ).fetchall()
+        }
 
-        if ip_address not in discovered_ips and status != "quarantined":
+        if "missed_scans" not in columns:
             cursor.execute("""
-                UPDATE devices
-                SET status = 'offline'
-                WHERE ip_address = ?
-            """, (ip_address,))
+                ALTER TABLE devices
+                ADD COLUMN missed_scans INTEGER NOT NULL DEFAULT 0
+            """)
 
-    connection.commit()
-    connection.close()
+        local_network = ipaddress.ip_network(
+            config.TARGET_NETWORK,
+            strict=False
+        )
+
+        detected_ips = set(discovered_ips)
+
+        stored_devices = cursor.execute("""
+            SELECT id, ip_address, status, missed_scans
+            FROM devices
+        """).fetchall()
+
+        for device in stored_devices:
+            device_id = device["id"]
+            ip_address = device["ip_address"]
+            status = device["status"]
+
+            # Ignore devices outside the monitored subnet.
+            try:
+                device_ip = ipaddress.ip_address(ip_address)
+            except (ValueError, TypeError):
+                continue
+
+            if device_ip not in local_network:
+                continue
+
+            # A successful response resets the counter.
+            if ip_address in detected_ips:
+                if status != "quarantined":
+                    cursor.execute("""
+                        UPDATE devices
+                        SET missed_scans = 0,
+                            status = 'online'
+                        WHERE id = ?
+                    """, (device_id,))
+                else:
+                    cursor.execute("""
+                        UPDATE devices
+                        SET missed_scans = 0
+                        WHERE id = ?
+                    """, (device_id,))
+
+                continue
+
+            # Do not overwrite quarantined status.
+            if status == "quarantined":
+                continue
+
+            new_count = int(device["missed_scans"] or 0) + 1
+
+            if new_count >= 3:
+                cursor.execute("""
+                    UPDATE devices
+                    SET missed_scans = ?,
+                        status = 'offline'
+                    WHERE id = ?
+                """, (new_count, device_id))
+            else:
+                cursor.execute("""
+                    UPDATE devices
+                    SET missed_scans = ?
+                    WHERE id = ?
+                """, (new_count, device_id))
+
+        connection.commit()
+
+    except Exception:
+        connection.rollback()
+        raise
+
+    finally:
+        connection.close()
 
 
 def infer_device_type(name_or_host, mac):
@@ -380,9 +464,14 @@ def log_traffic(
     packet_size=0,
     dns_query=None,
     timestamp=None,
-    is_simulated=False
+    is_simulated=False,
+    tcp_flags=None
 ):
-    """Record a traffic flow, distinguishing real and simulated traffic."""
+    """
+    Record network traffic in SQLite.
+
+    Supports real/simulated traffic and optional TCP flags.
+    """
     if timestamp is None:
         timestamp = datetime.now().isoformat(timespec="seconds")
 
@@ -393,10 +482,18 @@ def log_traffic(
 
         cur.execute("""
             INSERT INTO traffic (
-                device_id, source_ip, destination_ip, protocol,
-                destination_port, packet_size, dns_query,
-                timestamp, is_simulated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                device_id,
+                source_ip,
+                destination_ip,
+                protocol,
+                destination_port,
+                packet_size,
+                dns_query,
+                timestamp,
+                is_simulated,
+                tcp_flags
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             device_id,
             source_ip,
@@ -406,7 +503,8 @@ def log_traffic(
             packet_size,
             dns_query,
             timestamp,
-            int(is_simulated)
+            int(is_simulated),
+            tcp_flags
         ))
 
         conn.commit()
@@ -417,7 +515,6 @@ def log_traffic(
 
     finally:
         conn.close()
-
 
 def get_recent_traffic(limit=50, device_id=None, minutes=None, is_simulated=None):
     """Get recent traffic, optionally filtered by device and time."""

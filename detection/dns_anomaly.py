@@ -56,11 +56,33 @@ def check_dns_anomaly(dns_queries_or_traffic, failed_queries=0, source_ip=None, 
                     if r.get("source_ip") == source_ip
                 ]
 
-            queries = [
-                r.get("dns_query")
-                for r in records
-                if r.get("dns_query")
-            ]
+            # Count each recorded DNS query once.
+            # A query record must have a domain and originate from
+            # the device being evaluated.
+            seen_queries = set()
+            queries = []
+
+            for r in records:
+                domain = r.get("dns_query")
+                if not domain:
+                    continue
+
+                # DNS requests normally use destination port 53.
+                # Exclude DNS responses sent from port 53.
+                if r.get("destination_port") != 53:
+                    continue
+
+                query_key = (
+                    r.get("source_ip"),
+                    domain.strip().lower(),
+                    r.get("timestamp")
+                )
+
+                if query_key in seen_queries:
+                    continue
+
+                seen_queries.add(query_key)
+                queries.append(domain)
         else:
             queries = [
                 str(q) for q in dns_queries_or_traffic if q
@@ -83,9 +105,25 @@ def check_dns_anomaly(dns_queries_or_traffic, failed_queries=0, source_ip=None, 
             if len(main_sub) > 15 and calculate_entropy(main_sub) > 3.6:
                 anomalies.append(f"High entropy DGA/Tunneling pattern: {clean_domain}")
 
-    # Check query count burst
-    if len(queries) >= config.DNS_QUERY_RATE_THRESHOLD:
-        anomalies.append(f"Abnormal DNS query burst: {len(queries)} queries in window")
+    # Detect high-volume DNS activity involving many distinct domains.
+    # Repeated requests to a small group of domains are not sufficient
+    # to classify the traffic as a suspicious DNS burst.
+
+    unique_domains = {
+        domain.strip().lower()
+        for domain in queries
+        if domain and domain.strip()
+    }
+
+    if (
+        len(queries) >= config.DNS_QUERY_RATE_THRESHOLD
+        and len(unique_domains) >= 20
+    ):
+        anomalies.append(
+            f"Abnormal DNS query burst: "
+            f"{len(queries)} queries across "
+            f"{len(unique_domains)} distinct domains"
+        )
 
     # Check repeated NXDOMAIN / failure counter
     if detect_repeated_failures(failed_queries):

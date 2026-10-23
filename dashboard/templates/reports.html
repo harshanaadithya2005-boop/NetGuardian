@@ -1,22 +1,270 @@
+
 {% extends "base.html" %}
+
 {% block content %}
-<h2>Reports</h2>
 
-<div class="cards">
-  <div class="card"><h3>Devices</h3><div class="value">{{ total_devices }}</div></div>
-  <div class="card"><h3>Alerts</h3><div class="value">{{ total_alerts }}</div></div>
-  <div class="card"><h3>Unknown Devices</h3><div class="value">{{ unknown_devices }}</div></div>
-  <div class="card"><h3>Highest Risk</h3><div class="value">{{ highest_risk }}</div></div>
+<style>
+    .reports-title {
+        margin-bottom: 22px;
+        font-size: 26px;
+        font-weight: 700;
+        color: #f8fafc;
+    }
+
+    .reports-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 16px;
+        margin-bottom: 24px;
+    }
+
+    .reports-stat-card {
+        background: #172238;
+        border: 1px solid #293852;
+        border-radius: 10px;
+        padding: 20px;
+    }
+
+    .reports-stat-label {
+        font-size: 13px;
+        color: #94a3b8;
+        margin-bottom: 12px;
+    }
+
+    .reports-stat-value {
+        font-size: 30px;
+        font-weight: 700;
+        color: #f8fafc;
+        line-height: 1.2;
+    }
+
+    .reports-section {
+        background: #172238;
+        border: 1px solid #293852;
+        border-radius: 10px;
+        padding: 22px;
+        margin-bottom: 22px;
+    }
+
+    .reports-section h3 {
+        margin: 0 0 18px;
+        font-size: 17px;
+        color: #f8fafc;
+    }
+
+    .reports-alert-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 16px;
+    }
+
+    .reports-alert-card {
+        padding: 18px;
+        background: #101a2d;
+        border: 1px solid #293852;
+        border-radius: 8px;
+    }
+
+    .reports-alert-label {
+        font-size: 12px;
+        line-height: 1.5;
+        color: #94a3b8;
+        margin-bottom: 12px;
+    }
+
+    .reports-alert-value {
+        font-size: 28px;
+        font-weight: 700;
+        color: #f8fafc;
+    }
+
+    .reports-value-warning {
+        color: #fbbf24;
+    }
+
+    .reports-value-info {
+        color: #38bdf8;
+    }
+
+    .reports-value-success {
+        color: #4ade80;
+    }
+
+    .reports-traffic {
+        color: #38bdf8;
+        font-size: 18px;
+        font-weight: 600;
+        overflow-wrap: anywhere;
+    }
+
+    .reports-export-buttons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+    }
+
+    .reports-export-button {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 11px 18px;
+        background: #123851;
+        color: #67e8f9;
+        border: 1px solid #1b5974;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 600;
+        text-decoration: none;
+    }
+
+    .reports-export-button:hover {
+        background: #1b4e6b;
+        color: white;
+    }
+
+    .reports-note {
+        margin-top: 16px;
+        color: #94a3b8;
+        font-size: 12px;
+        line-height: 1.6;
+    }
+</style>
+
+<h2 class="reports-title">
+    <i class="fa-solid fa-chart-column"></i>
+    Security Reports
+</h2>
+
+<!-- DEVICE SUMMARY -->
+
+<div class="reports-grid">
+
+    <div class="reports-stat-card">
+        <div class="reports-stat-label">Total Local Devices</div>
+        <div class="reports-stat-value">
+            {{ total_devices }}
+        </div>
+    </div>
+
+    <div class="reports-stat-card">
+        <div class="reports-stat-label">Untrusted Devices</div>
+        <div class="reports-stat-value reports-value-warning">
+            {{ unknown_devices }}
+        </div>
+    </div>
+
+    <div class="reports-stat-card">
+        <div class="reports-stat-label">Highest Device Risk</div>
+        <div class="reports-stat-value">
+            {{ highest_risk }}
+            <span style="font-size:14px;color:#94a3b8;">/ 100</span>
+        </div>
+    </div>
+
 </div>
 
-<div class="panel">
-  <h3>Top Device (most traffic)</h3>
-  <p style="font-size:20px;">{{ top_device }}</p>
-</div>
+<!-- ALERT STATISTICS -->
 
-<div class="panel">
-  <h3>Export</h3>
-  <a href="/reports/alerts.csv"><button type="button">Download Alerts CSV</button></a>
-    <a href="/reports/report.pdf"><button type="button">Download PDF Report</button></a>
-</div>
+<section class="reports-section">
+
+    <h3>
+        <i class="fa-solid fa-bell"></i>
+        Security Alert Statistics
+    </h3>
+
+    <div class="reports-alert-grid">
+
+        <div class="reports-alert-card">
+            <div class="reports-alert-label">
+                Current Open Alerts
+            </div>
+            <div class="reports-alert-value reports-value-warning">
+                {{ active_alerts }}
+            </div>
+        </div>
+
+        <div class="reports-alert-card">
+            <div class="reports-alert-label">
+                New Alerts Since Reset
+            </div>
+            <div class="reports-alert-value reports-value-info">
+                {{ new_alerts }}
+            </div>
+        </div>
+
+        <div class="reports-alert-card">
+            <div class="reports-alert-label">
+                Archived Historical Alerts
+            </div>
+            <div class="reports-alert-value">
+                {{ historical_alerts }}
+            </div>
+        </div>
+
+        <div class="reports-alert-card">
+            <div class="reports-alert-label">
+                Total Recorded Alerts
+            </div>
+            <div class="reports-alert-value reports-value-success">
+                {{ total_alerts }}
+            </div>
+        </div>
+
+    </div>
+
+    <p class="reports-note">
+        Reset Alerts clears the active alert view without deleting
+        historical records. Current Open Alerts counts unresolved alerts
+        created after the most recent reset.
+    </p>
+
+</section>
+
+<!-- TRAFFIC REPORT -->
+
+<section class="reports-section">
+
+    <h3>
+        <i class="fa-solid fa-network-wired"></i>
+        Top Device by Network Traffic
+    </h3>
+
+    <p class="reports-traffic">
+        {{ top_device }}
+    </p>
+
+</section>
+
+<!-- EXPORT REPORTS -->
+
+<section class="reports-section">
+
+    <h3>
+        <i class="fa-solid fa-file-export"></i>
+        Export Security Reports
+    </h3>
+
+    <div class="reports-export-buttons">
+
+        <a href="/reports/alerts.csv"
+           class="reports-export-button">
+            <i class="fa-solid fa-file-csv"></i>
+            Download Alerts CSV
+        </a>
+
+        <a href="/reports/report.pdf"
+           class="reports-export-button">
+            <i class="fa-solid fa-file-pdf"></i>
+            Download PDF Report
+        </a>
+
+    </div>
+
+    <p class="reports-note">
+        Export files retain their existing historical reporting behavior.
+        The new alert breakdown is currently displayed on this Reports page.
+    </p>
+
+</section>
+
 {% endblock %}

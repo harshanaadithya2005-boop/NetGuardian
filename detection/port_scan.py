@@ -23,7 +23,13 @@ def check_port_scan(
     threshold=config.PORT_SCAN_THRESHOLD,
     source_ip=None
 ):
-    """Detect scans using ports targeted by the specified source device."""
+    """
+    Detect potential TCP port scans by counting distinct
+    destination ports receiving initial SYN packets.
+
+    SYN-ACK responses, established connections, and non-TCP
+    traffic are excluded.
+    """
 
     if not traffic_or_ports:
         return {
@@ -36,23 +42,38 @@ def check_port_scan(
     if isinstance(traffic_or_ports[0], dict):
         records = traffic_or_ports
 
-        # Only count traffic originating from the device being evaluated.
-        if source_ip:
-            records = [
-                r for r in records
-                if r.get("source_ip") == source_ip
-            ]
+        ports = []
 
-        ports = [
-            r.get("destination_port")
-            for r in records
-            if r.get("destination_port") is not None
-        ]
+        for record in records:
+            if source_ip and record.get("source_ip") != source_ip:
+                continue
+
+            if str(record.get("protocol", "")).upper() != "TCP":
+                continue
+
+            # Only count initial TCP SYN packets.
+            # Excludes SYN-ACK and other TCP packets.
+            if str(record.get("tcp_flags", "")).upper() != "S":
+                continue
+
+            destination_port = record.get("destination_port")
+
+            try:
+                port = int(destination_port)
+            except (TypeError, ValueError):
+                continue
+
+            if 1 <= port <= 65535:
+                ports.append(port)
+
     else:
+        # Preserve compatibility with existing tests that pass
+        # a simple list of destination ports.
         ports = list(traffic_or_ports)
 
     unique_ports = sorted({
-        int(port) for port in ports
+        int(port)
+        for port in ports
         if str(port).isdigit() and 1 <= int(port) <= 65535
     })
 
@@ -68,8 +89,9 @@ def check_port_scan(
             "unique_ports_count": len(unique_ports),
             "scanned_ports": unique_ports[:15],
             "message": (
-                f"Port scan activity detected: "
-                f"{len(unique_ports)} distinct destination ports"
+                f"Potential TCP port scan detected: "
+                f"SYN attempts to {len(unique_ports)} "
+                f"distinct destination ports"
             )
         }
 
@@ -79,7 +101,6 @@ def check_port_scan(
         "risk_weight": 0,
         "unique_ports_count": len(unique_ports)
     }
-
 
 if __name__ == "__main__":
     sample_ports = [21, 22, 23, 25, 53, 80, 443, 445, 8080]

@@ -19,6 +19,47 @@
         </div>
     </div>
     <div class="device-header-actions">
+
+
+{% if device.trusted %}
+    <span class="badge badge-success badge-lg">
+        <i class="fa-solid fa-shield-halved"></i>
+        TRUSTED DEVICE
+    </span>
+
+    <form method="POST"
+          action="{{ url_for('update_device_trust', device_id=device.id) }}"
+          style="display:inline;">
+        <input type="hidden" name="trusted" value="0">
+
+        <button type="submit"
+                class="btn btn-warning"
+                onclick="return confirm('Remove trust from this device?');">
+            <i class="fa-solid fa-shield"></i>
+            Remove Trust
+        </button>
+    </form>
+{% else %}
+    <span class="badge badge-warning badge-lg">
+        <i class="fa-solid fa-triangle-exclamation"></i>
+        UNTRUSTED DEVICE
+    </span>
+
+    <form method="POST"
+          action="{{ url_for('update_device_trust', device_id=device.id) }}"
+          style="display:inline;">
+        <input type="hidden" name="trusted" value="1">
+
+        <button type="submit"
+                class="btn btn-success"
+                onclick="return confirm('Trust this known device?');">
+            <i class="fa-solid fa-shield-halved"></i>
+            Trust Device
+        </button>
+    </form>
+{% endif %}
+
+
         {% if device.status == 'quarantined' %}
         <span class="badge badge-danger badge-lg"><i class="fa-solid fa-ban"></i> QUARANTINED</span>
         <button class="btn btn-success" onclick="toggleQuarantine({{ device.id }}, 'release')">

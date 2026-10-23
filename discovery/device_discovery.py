@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 import socket
 import subprocess
+import ipaddress
 from datetime import datetime
 
 # Ensure project root is in sys.path
@@ -19,6 +20,30 @@ try:
     SCAPY_AVAILABLE = True
 except Exception:
     SCAPY_AVAILABLE = False
+
+
+def is_target_network_ip(ip_address, target_network=None):
+    """
+    Check whether an IP belongs to NetGuardian's
+    configured local network.
+    """
+
+    try:
+        network = ipaddress.ip_network(
+            target_network or config.TARGET_NETWORK,
+            strict=False
+        )
+
+        address = ipaddress.ip_address(ip_address)
+
+        return (
+            address in network
+            and address != network.network_address
+            and address != network.broadcast_address
+        )
+
+    except (ValueError, TypeError):
+        return False
 
 
 def detect_active_interface():
@@ -80,6 +105,13 @@ def scan_via_system_arp():
             match = pattern.search(line)
             if match:
                 ip, mac, entry_type = match.groups()
+
+                if not is_target_network_ip(ip):
+                    continue
+
+                if entry_type.lower() != "dynamic":
+                    continue
+
                 # Skip broadcast and multicast addresses
                 if not ip.startswith("224.") and not ip.startswith("239.") and not ip.endswith(".255"):
                     formatted_mac = mac.replace("-", ":").upper()
@@ -106,6 +138,7 @@ def discover_devices(target_network=None, iface=None, allow_fallback=True):
     discovered = []
     discovered_ips = []
     current_time = datetime.now().isoformat(timespec="seconds")
+    scan_succeeded = False
 
     print("=" * 60)
     print("Starting NetGuardian Device Discovery...")
@@ -119,9 +152,13 @@ def discover_devices(target_network=None, iface=None, allow_fallback=True):
         try:
             packet = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=target)
             answered, _ = srp(packet, timeout=2, verbose=0, iface=interface)
-
+            scan_succeeded = True
             for _, received in answered:
                 ip_address = received.psrc
+
+                if not is_target_network_ip(ip_address, target):
+                    continue
+
                 mac_address = received.hwsrc.upper()
                 hostname = get_hostname(ip_address)
                 dev_type = get_device_type(hostname, ip_address)
@@ -175,11 +212,39 @@ def discover_devices(target_network=None, iface=None, allow_fallback=True):
             timestamp=current_time
         )
 
-    # Mark devices not found in this scan as offline (excluding quarantined ones)
-    try:
-        mark_missing_devices_offline(discovered_ips)
-    except Exception as e:
-        print(f"[Discovery] Offline tracking notice: {e}")
+
+    # Update offline status only when an active Scapy scan
+    # completed successfully.
+    #
+    # Windows ARP-cache fallback may contain stale entries,
+    # so it must not be used to decide which devices are offline.
+
+
+    # Only update offline status when an active ARP scan
+    # succeeds AND the reference gateway responds.
+
+    reference_gateway = "192.168.8.1"
+
+    if (
+        scan_succeeded
+        and discovered_ips
+        and reference_gateway in discovered_ips
+    ):
+        try:
+            mark_missing_devices_offline(discovered_ips)
+            print(
+                "[Discovery] Offline tracking updated "
+                "(reference gateway confirmed)."
+            )
+        except Exception as e:
+            print(f"[Discovery] Offline tracking notice: {e}")
+    else:
+        print(
+            "[Discovery] Offline tracking skipped: "
+            "active scan or gateway verification unsuccessful."
+        )
+
+
 
     print(f"Total devices discovered: {len(discovered)}\n")
     return discovered
