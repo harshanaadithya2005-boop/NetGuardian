@@ -1,8 +1,11 @@
+
 import sqlite3
 import ipaddress
 import config
-from datetime import datetime
+
+from datetime import datetime, timedelta
 from database.db import get_connection
+
 
 PLACEHOLDER_MACS = {
     None,
@@ -17,11 +20,12 @@ def is_placeholder_mac(mac_address):
     """Check whether a MAC address is missing or temporary."""
     return (
         mac_address is None
-        or mac_address.strip().upper() in PLACEHOLDER_MACS
+        or str(mac_address).strip().upper() in PLACEHOLDER_MACS
     )
 
+
 def is_local_device_ip(ip_address):
-    """Return True only for valid IP addresses in the configured network."""
+    """Return True if the IP belongs to the configured network."""
     try:
         network = ipaddress.ip_network(
             config.TARGET_NETWORK,
@@ -32,6 +36,10 @@ def is_local_device_ip(ip_address):
         return False
 
 
+# ==========================================================
+# DEVICE DISCOVERY AND IDENTITY MANAGEMENT
+# ==========================================================
+
 def add_or_update_device(
     ip_address,
     mac_address,
@@ -40,76 +48,124 @@ def add_or_update_device(
     device_type=None,
     timestamp=None
 ):
-    """Add or update a device while preserving verified identities."""
+    """
+    Add or update a discovered device.
+
+    - Prefer verified MAC identities.
+    - Preserve existing trusted settings and device IDs.
+    - Do not merge two different MAC identities sharing an IP.
+    - Record MAC/IP identity conflicts for investigation.
+    - Do not overwrite verified MACs with placeholders.
+    """
+
     if timestamp is None:
         timestamp = datetime.now().isoformat(timespec="seconds")
 
     if not ip_address:
         raise ValueError("An IP address is required for discovery.")
 
-    # Never overwrite a verified MAC address with a placeholder.
-    if is_placeholder_mac(mac_address):
-        mac_address = None
+    normalized_mac = (
+        str(mac_address).strip().upper()
+        if not is_placeholder_mac(mac_address)
+        else None
+    )
+
+    valid_mac = normalized_mac is not None
 
     connection = get_connection()
 
     try:
         cursor = connection.cursor()
 
-        # Normalize the MAC address before comparing identities.
-        normalized_mac = (
-            mac_address.strip().upper()
-            if mac_address
-            else None
-        )
-
-        valid_mac = not is_placeholder_mac(normalized_mac)
-
+        # 1. Find device by verified MAC address.
         existing_device = None
 
-        # Prefer a verified MAC address over an IP address.
         if valid_mac:
-            cursor.execute(
-                """
+            existing_device = cursor.execute("""
                 SELECT id, status, mac_address
                 FROM devices
                 WHERE LOWER(mac_address) = LOWER(?)
-                """,
-                (normalized_mac,)
-            )
-            existing_device = cursor.fetchone()
+            """, (normalized_mac,)).fetchone()
 
-        # Check who currently owns the requested IP.
-        cursor.execute(
-            """
+        # 2. Find existing owner of the requested IP.
+        ip_owner = cursor.execute("""
             SELECT id, status, mac_address
             FROM devices
             WHERE ip_address = ?
-            """,
-            (ip_address,)
-        )
-        ip_owner = cursor.fetchone()
+        """, (ip_address,)).fetchone()
 
-        # If the IP belongs to another verified identity,
-        # do not overwrite that identity.
-        if existing_device is None and ip_owner is not None:
+        # 3. Detect different verified MACs on the same IP.
+        if ip_owner is not None and valid_mac:
             owner_mac = ip_owner["mac_address"]
 
             if (
-                not valid_mac
-                or is_placeholder_mac(owner_mac)
-                or owner_mac.strip().lower()
-                == normalized_mac.lower()
+                not is_placeholder_mac(owner_mac)
+                and str(owner_mac).strip().upper() != normalized_mac
             ):
-                existing_device = ip_owner
-            else:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS device_identity_conflicts (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ip_address TEXT NOT NULL,
+                        existing_device_id INTEGER,
+                        existing_mac TEXT NOT NULL,
+                        observed_mac TEXT NOT NULL,
+                        detected_at TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'open',
+                        FOREIGN KEY (existing_device_id)
+                            REFERENCES devices(id)
+                    )
+                """)
+
+                previous = cursor.execute("""
+                    SELECT id
+                    FROM device_identity_conflicts
+                    WHERE ip_address = ?
+                      AND existing_mac = ?
+                      AND observed_mac = ?
+                      AND status = 'open'
+                    LIMIT 1
+                """, (
+                    ip_address,
+                    owner_mac,
+                    normalized_mac
+                )).fetchone()
+
+                if previous is None:
+                    cursor.execute("""
+                        INSERT INTO device_identity_conflicts (
+                            ip_address,
+                            existing_device_id,
+                            existing_mac,
+                            observed_mac,
+                            detected_at,
+                            status
+                        )
+                        VALUES (?, ?, ?, ?, ?, 'open')
+                    """, (
+                        ip_address,
+                        ip_owner["id"],
+                        owner_mac,
+                        normalized_mac,
+                        timestamp
+                    ))
+
+                connection.commit()
+
                 print(
-                    "[DeviceDiscovery] Identity conflict at "
-                    f"{ip_address}: existing device "
-                    f"{ip_owner['id']} has a different verified MAC."
+                    "[DeviceDiscovery] Identity conflict recorded: "
+                    f"IP {ip_address}, "
+                    f"existing MAC {owner_mac}, "
+                    f"observed MAC {normalized_mac}"
                 )
+
+                # Stop before updating or inserting another device.
                 return None
 
+        # 4. Reuse the IP owner only if no MAC identity matched.
+        if existing_device is None and ip_owner is not None:
+            existing_device = ip_owner
+
+        # 5. Update an existing device.
         if existing_device is not None:
             device_id = existing_device["id"]
 
@@ -120,54 +176,44 @@ def add_or_update_device(
 
             if ip_conflict:
                 print(
-                    "[DeviceDiscovery] IP conflict detected: "
+                    "[DeviceDiscovery] IP conflict: "
                     f"{ip_address} belongs to device "
-                    f"{ip_owner['id']}, but MAC matches "
-                    f"device {device_id}."
+                    f"{ip_owner['id']}, while the observed MAC "
+                    f"matches device {device_id}. "
+                    "Existing identities preserved."
                 )
+
+                return None
 
             current_status = existing_device["status"]
 
             new_status = (
-                    "quarantined" if current_status == "quarantined"
-                    else current_status if ip_conflict
-                    else "online"
+                "quarantined"
+                if current_status == "quarantined"
+                else "online"
             )
 
-            # Preserve the old IP if another record owns
-            # the requested IP. Never overwrite a verified
-            # MAC with a placeholder.
-            cursor.execute(
-                """
+            cursor.execute("""
                 UPDATE devices
                 SET
-                    ip_address = CASE
-                        WHEN ? THEN ip_address
-                        ELSE ?
-                    END,
-                    mac_address = CASE
-                        WHEN ? THEN ?
-                        ELSE mac_address
-                    END,
+                    ip_address = ?,
+                    mac_address = COALESCE(?, mac_address),
                     hostname = COALESCE(?, hostname),
                     device_type = COALESCE(?, device_type),
                     last_seen = ?,
                     status = ?
                 WHERE id = ?
-                """,
-                (
-                    ip_conflict,
-                    ip_address,
-                    valid_mac,
-                    normalized_mac,
-                    hostname,
-                    device_type,
-                    timestamp,
-                    new_status,
-                    device_id
-                )
-            )
+            """, (
+                ip_address,
+                normalized_mac,
+                hostname,
+                device_type,
+                timestamp,
+                new_status,
+                device_id
+            ))
 
+        # 6. Insert a genuinely new device.
         else:
             inferred_name = (
                 device_name
@@ -180,14 +226,10 @@ def add_or_update_device(
 
             inferred_type = (
                 device_type
-                or infer_device_type(
-                    inferred_name,
-                    normalized_mac
-                )
+                or infer_device_type(inferred_name, normalized_mac)
             )
 
-            cursor.execute(
-                """
+            cursor.execute("""
                 INSERT INTO devices (
                     ip_address,
                     mac_address,
@@ -201,17 +243,15 @@ def add_or_update_device(
                     risk_score
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, 'online', 0, 20)
-                """,
-                (
-                    ip_address,
-                    normalized_mac,
-                    hostname,
-                    inferred_name,
-                    inferred_type,
-                    timestamp,
-                    timestamp
-                )
-            )
+            """, (
+                ip_address,
+                normalized_mac,
+                hostname,
+                inferred_name,
+                inferred_type,
+                timestamp,
+                timestamp
+            ))
 
             device_id = cursor.lastrowid
 
@@ -232,27 +272,24 @@ def add_or_update_device(
         connection.close()
 
 
+# ==========================================================
+# DEVICE ONLINE / OFFLINE TRACKING
+# ==========================================================
 
 def mark_missing_devices_offline(discovered_ips):
     """
-    Mark devices offline only after 3 consecutive missed scans.
+    Mark devices offline after three consecutive missed scans.
 
-    - A detected device has its missed-scan count reset to 0.
-    - An undetected device has its missed-scan count increased.
-    - A device is marked offline after 3 missed scans.
-    - Quarantined devices remain quarantined.
-    - Only devices within TARGET_NETWORK are evaluated.
+    A discovered device resets its counter to zero.
+    Quarantined devices retain their quarantine status.
+    Only devices in TARGET_NETWORK are evaluated.
     """
-
-    import ipaddress
-    import config
 
     connection = get_connection()
 
     try:
         cursor = connection.cursor()
 
-        # Add persistent missed-scan counter if necessary.
         columns = {
             row["name"]
             for row in cursor.execute(
@@ -283,7 +320,6 @@ def mark_missing_devices_offline(discovered_ips):
             ip_address = device["ip_address"]
             status = device["status"]
 
-            # Ignore devices outside the monitored subnet.
             try:
                 device_ip = ipaddress.ip_address(ip_address)
             except (ValueError, TypeError):
@@ -292,25 +328,25 @@ def mark_missing_devices_offline(discovered_ips):
             if device_ip not in local_network:
                 continue
 
-            # A successful response resets the counter.
+            # Device found during this scan.
             if ip_address in detected_ips:
-                if status != "quarantined":
+                if status == "quarantined":
+                    cursor.execute("""
+                        UPDATE devices
+                        SET missed_scans = 0
+                        WHERE id = ?
+                    """, (device_id,))
+                else:
                     cursor.execute("""
                         UPDATE devices
                         SET missed_scans = 0,
                             status = 'online'
                         WHERE id = ?
                     """, (device_id,))
-                else:
-                    cursor.execute("""
-                        UPDATE devices
-                        SET missed_scans = 0
-                        WHERE id = ?
-                    """, (device_id,))
 
                 continue
 
-            # Do not overwrite quarantined status.
+            # Never overwrite quarantine status.
             if status == "quarantined":
                 continue
 
@@ -340,120 +376,220 @@ def mark_missing_devices_offline(discovered_ips):
         connection.close()
 
 
+# ==========================================================
+# DEVICE TYPE AND BEHAVIOUR PROFILES
+# ==========================================================
+
 def infer_device_type(name_or_host, mac):
-    """Heuristic identification of device type based on hostname/MAC."""
+    """Estimate device type using its hostname or name."""
+
     target = (name_or_host or "").lower()
-    if any(k in target for k in ["printer", "hp-print", "epson", "canon"]):
+
+    if any(k in target for k in [
+        "printer", "hp-print", "epson", "canon"
+    ]):
         return "Printer"
-    elif any(k in target for k in ["cam", "cctv", "dvr", "nvr"]):
+
+    elif any(k in target for k in [
+        "cam", "cctv", "dvr", "nvr"
+    ]):
         return "CCTV / Camera"
-    elif any(k in target for k in ["iphone", "android", "galaxy", "phone", "mobile"]):
+
+    elif any(k in target for k in [
+        "iphone", "android", "galaxy", "phone", "mobile"
+    ]):
         return "Mobile"
-    elif any(k in target for k in ["laptop", "desktop", "pc", "macbook", "workstation"]):
+
+    elif any(k in target for k in [
+        "laptop", "desktop", "pc", "macbook", "workstation"
+    ]):
         return "Workstation"
-    elif any(k in target for k in ["router", "gateway", "switch", "ap"]):
+
+    elif any(k in target for k in [
+        "router", "gateway", "switch", "ap"
+    ]):
         return "Gateway/Router"
+
     return "IoT Device"
 
 
 def init_default_profile(device_id, device_type, cursor):
-    """Set realistic baseline behavior profiles according to device type (Proposal Section 8.1)."""
+    """Initialize device-specific behavioural baselines."""
+
     now = datetime.now().isoformat(timespec="seconds")
+
     if device_type == "Printer":
         cursor.execute("""
             INSERT OR IGNORE INTO behaviour_profiles (
-                device_id, normal_bandwidth, normal_protocols, normal_ports,
-                normal_dns_rate, normal_dest_ips, active_hours, updated_at
-            ) VALUES (?, 5.0, 'TCP', '9100,515,631', 10, 3, '08:00-18:00', ?)
+                device_id,
+                normal_bandwidth,
+                normal_protocols,
+                normal_ports,
+                normal_dns_rate,
+                normal_dest_ips,
+                active_hours,
+                updated_at
+            )
+            VALUES (
+                ?, 5.0, 'TCP', '9100,515,631',
+                10, 3, '08:00-18:00', ?
+            )
         """, (device_id, now))
+
     elif device_type == "CCTV / Camera":
         cursor.execute("""
             INSERT OR IGNORE INTO behaviour_profiles (
-                device_id, normal_bandwidth, normal_protocols, normal_ports,
-                normal_dns_rate, normal_dest_ips, active_hours, updated_at
-            ) VALUES (?, 100.0, 'TCP,UDP', '554,80,443', 5, 2, '00:00-23:59', ?)
+                device_id,
+                normal_bandwidth,
+                normal_protocols,
+                normal_ports,
+                normal_dns_rate,
+                normal_dest_ips,
+                active_hours,
+                updated_at
+            )
+            VALUES (
+                ?, 100.0, 'TCP,UDP', '554,80,443',
+                5, 2, '00:00-23:59', ?
+            )
         """, (device_id, now))
-    else:  # Workstation / Laptop / General
+
+    else:
         cursor.execute("""
             INSERT OR IGNORE INTO behaviour_profiles (
-                device_id, normal_bandwidth, normal_protocols, normal_ports,
-                normal_dns_rate, normal_dest_ips, active_hours, updated_at
-            ) VALUES (?, 50.0, 'TCP,UDP', '80,443,53', 40, 12, '08:00-20:00', ?)
+                device_id,
+                normal_bandwidth,
+                normal_protocols,
+                normal_ports,
+                normal_dns_rate,
+                normal_dest_ips,
+                active_hours,
+                updated_at
+            )
+            VALUES (
+                ?, 50.0, 'TCP,UDP', '80,443,53',
+                40, 12, '08:00-20:00', ?
+            )
         """, (device_id, now))
 
 
+# ==========================================================
+# DEVICE DATABASE OPERATIONS
+# ==========================================================
+
 def get_all_devices():
-    """Retrieve all devices ordered by risk score descending."""
+    """Retrieve all devices, ordered by risk score."""
+
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM devices ORDER BY risk_score DESC, id ASC")
-    rows = [dict(r) for r in cur.fetchall()]
-    conn.close()
-    return rows
+    try:
+        rows = conn.execute("""
+            SELECT *
+            FROM devices
+            ORDER BY risk_score DESC, id ASC
+        """).fetchall()
+
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
 
 def get_device_by_mac(mac_address):
-    """Retrieve a device using its verified MAC address."""
+    """Find a device using its verified MAC address."""
+
     if is_placeholder_mac(mac_address):
         return None
 
-    connection = get_connection()
+    conn = get_connection()
     try:
-        cursor = connection.cursor()
-        cursor.execute(
-            "SELECT * FROM devices WHERE LOWER(mac_address) = LOWER(?)",
-            (mac_address,)
-        )
-        row = cursor.fetchone()
+        row = conn.execute("""
+            SELECT *
+            FROM devices
+            WHERE LOWER(mac_address) = LOWER(?)
+        """, (mac_address,)).fetchone()
+
         return dict(row) if row else None
     finally:
-        connection.close()
+        conn.close()
+
 
 def get_device_by_id(device_id):
-    """Retrieve a single device by its primary key ID."""
+    """Retrieve a device by its primary key."""
+
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM devices WHERE id = ?", (device_id,))
-    row = cur.fetchone()
-    conn.close()
-    return dict(row) if row else None
+    try:
+        row = conn.execute(
+            "SELECT * FROM devices WHERE id = ?",
+            (device_id,)
+        ).fetchone()
+
+        return dict(row) if row else None
+    finally:
+        conn.close()
 
 
 def get_device_by_ip(ip_address):
-    """Retrieve a single device by its IP address."""
+    """Retrieve a device using its IP address."""
+
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM devices WHERE ip_address = ?", (ip_address,))
-    row = cur.fetchone()
-    conn.close()
-    return dict(row) if row else None
+    try:
+        row = conn.execute(
+            "SELECT * FROM devices WHERE ip_address = ?",
+            (ip_address,)
+        ).fetchone()
+
+        return dict(row) if row else None
+    finally:
+        conn.close()
 
 
 def update_device_risk(device_id, risk_score):
-    """Update risk score for a device."""
+    """Update a device's risk score."""
+
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("UPDATE devices SET risk_score = ? WHERE id = ?", (risk_score, device_id))
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute("""
+            UPDATE devices
+            SET risk_score = ?
+            WHERE id = ?
+        """, (risk_score, device_id))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def set_device_trusted(device_id, trusted):
-    """Toggle or update device trusted status."""
+    """Update the trusted flag for a device."""
+
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("UPDATE devices SET trusted = ? WHERE id = ?", (1 if trusted else 0, device_id))
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute("""
+            UPDATE devices
+            SET trusted = ?
+            WHERE id = ?
+        """, (1 if trusted else 0, device_id))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def set_device_status(device_id, status):
-    """Set status ('online', 'offline', 'quarantined')."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("UPDATE devices SET status = ? WHERE id = ?", (status, device_id))
-    conn.commit()
-    conn.close()
+    """Update a device's network status."""
 
+    conn = get_connection()
+    try:
+        conn.execute("""
+            UPDATE devices
+            SET status = ?
+            WHERE id = ?
+        """, (status, device_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ==========================================================
+# TRAFFIC LOGGING AND RETRIEVAL
+# ==========================================================
 
 def log_traffic(
     device_id,
@@ -467,20 +603,15 @@ def log_traffic(
     is_simulated=False,
     tcp_flags=None
 ):
-    """
-    Record network traffic in SQLite.
+    """Store real or simulated traffic, including optional TCP flags."""
 
-    Supports real/simulated traffic and optional TCP flags.
-    """
     if timestamp is None:
         timestamp = datetime.now().isoformat(timespec="seconds")
 
     conn = get_connection()
 
     try:
-        cur = conn.cursor()
-
-        cur.execute("""
+        conn.execute("""
             INSERT INTO traffic (
                 device_id,
                 source_ip,
@@ -516,19 +647,25 @@ def log_traffic(
     finally:
         conn.close()
 
-def get_recent_traffic(limit=50, device_id=None, minutes=None, is_simulated=None):
-    """Get recent traffic, optionally filtered by device and time."""
+
+def get_recent_traffic(
+    limit=50,
+    device_id=None,
+    minutes=None,
+    is_simulated=None
+):
+    """Retrieve recent traffic with optional filters."""
+
     conn = get_connection()
 
     try:
-        cur = conn.cursor()
-
         query = """
             SELECT t.*, d.hostname, d.device_name
             FROM traffic t
             JOIN devices d ON t.device_id = d.id
             WHERE 1 = 1
         """
+
         params = []
 
         if device_id is not None:
@@ -540,8 +677,6 @@ def get_recent_traffic(limit=50, device_id=None, minutes=None, is_simulated=None
             params.append(int(is_simulated))
 
         if minutes is not None:
-            from datetime import timedelta
-
             if minutes <= 0:
                 raise ValueError("minutes must be greater than zero")
 
@@ -555,162 +690,271 @@ def get_recent_traffic(limit=50, device_id=None, minutes=None, is_simulated=None
         query += " ORDER BY t.id DESC LIMIT ?"
         params.append(limit)
 
-        cur.execute(query, params)
-        return [dict(row) for row in cur.fetchall()]
+        rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
 
     finally:
         conn.close()
 
 
-def create_alert(device_id, alert_type, risk_score, severity, description, timestamp=None):
-    """Record a security alert."""
+# ==========================================================
+# ALERT MANAGEMENT
+# ==========================================================
+
+def create_alert(
+    device_id,
+    alert_type,
+    risk_score,
+    severity,
+    description,
+    timestamp=None
+):
+    """Create an alert unless an identical open alert already exists."""
+
     if timestamp is None:
         timestamp = datetime.now().isoformat(timespec="seconds")
 
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id FROM alerts
-        WHERE device_id = ? AND alert_type = ? AND status = 'open'
-    """, (device_id, alert_type))
-    existing = cur.fetchone()
 
-    if not existing:
-        cur.execute("""
-            INSERT INTO alerts (device_id, alert_type, risk_score, severity, description, status, timestamp)
-            VALUES (?, ?, ?, ?, ?, 'open', ?)
-        """, (device_id, alert_type, risk_score, severity, description, timestamp))
-        alert_id = cur.lastrowid
-    else:
-        alert_id = existing["id"]
+    try:
+        cur = conn.cursor()
 
-    conn.commit()
-    conn.close()
-    return alert_id
+        existing = cur.execute("""
+            SELECT id
+            FROM alerts
+            WHERE device_id = ?
+              AND alert_type = ?
+              AND status = 'open'
+        """, (device_id, alert_type)).fetchone()
+
+        if existing:
+            alert_id = existing["id"]
+        else:
+            cur.execute("""
+                INSERT INTO alerts (
+                    device_id,
+                    alert_type,
+                    risk_score,
+                    severity,
+                    description,
+                    status,
+                    timestamp
+                )
+                VALUES (?, ?, ?, ?, ?, 'open', ?)
+            """, (
+                device_id,
+                alert_type,
+                risk_score,
+                severity,
+                description,
+                timestamp
+            ))
+
+            alert_id = cur.lastrowid
+
+        conn.commit()
+        return alert_id
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
 
 
 def get_recent_alerts(limit=50, status=None):
-    """Get recent alerts, optionally filtered by status ('open', 'resolved')."""
+    """Retrieve alerts, optionally filtered by status."""
+
     conn = get_connection()
-    cur = conn.cursor()
-    if status:
-        cur.execute("""
-            SELECT a.*, d.ip_address, d.hostname, d.device_name
+
+    try:
+        query = """
+            SELECT
+                a.*,
+                d.ip_address,
+                d.hostname,
+                d.device_name
             FROM alerts a
             JOIN devices d ON a.device_id = d.id
-            WHERE a.status = ?
-            ORDER BY a.id DESC LIMIT ?
-        """, (status, limit))
-    else:
-        cur.execute("""
-            SELECT a.*, d.ip_address, d.hostname, d.device_name
-            FROM alerts a
-            JOIN devices d ON a.device_id = d.id
-            ORDER BY a.id DESC LIMIT ?
-        """, (limit,))
-    rows = [dict(r) for r in cur.fetchall()]
-    conn.close()
-    return rows
+        """
+
+        params = []
+
+        if status:
+            query += " WHERE a.status = ?"
+            params.append(status)
+
+        query += " ORDER BY a.id DESC LIMIT ?"
+        params.append(limit)
+
+        rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    finally:
+        conn.close()
 
 
 def resolve_alert(alert_id):
-    """Mark an alert as resolved."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("UPDATE alerts SET status = 'resolved' WHERE id = ?", (alert_id,))
-    conn.commit()
-    conn.close()
+    """Mark a security alert as resolved."""
 
+    conn = get_connection()
+
+    try:
+        conn.execute("""
+            UPDATE alerts
+            SET status = 'resolved'
+            WHERE id = ?
+        """, (alert_id,))
+        conn.commit()
+
+    finally:
+        conn.close()
+
+
+# ==========================================================
+# BEHAVIOURAL PROFILES
+# ==========================================================
 
 def get_device_profile(device_id):
-    """Fetch baseline behaviour profile for a device."""
+    """Retrieve a device's behavioural baseline profile."""
+
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM behaviour_profiles WHERE device_id = ?", (device_id,))
-    row = cur.fetchone()
-    conn.close()
-    return dict(row) if row else None
+
+    try:
+        row = conn.execute("""
+            SELECT *
+            FROM behaviour_profiles
+            WHERE device_id = ?
+        """, (device_id,)).fetchone()
+
+        return dict(row) if row else None
+
+    finally:
+        conn.close()
 
 
-def log_quarantine(device_id, action, reason, performed_by="NetGuardian Auto-Engine"):
-    """Audit log for device quarantine and release actions."""
+# ==========================================================
+# QUARANTINE LOGGING
+# ==========================================================
+
+def log_quarantine(
+    device_id,
+    action,
+    reason,
+    performed_by="NetGuardian Auto-Engine"
+):
+    """Record quarantine and release actions."""
+
     now = datetime.now().isoformat(timespec="seconds")
+
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO quarantine_logs (device_id, action, reason, performed_by, timestamp)
-        VALUES (?, ?, ?, ?, ?)
-    """, (device_id, action, reason, performed_by, now))
-    conn.commit()
-    conn.close()
+
+    try:
+        conn.execute("""
+            INSERT INTO quarantine_logs (
+                device_id,
+                action,
+                reason,
+                performed_by,
+                timestamp
+            )
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            device_id,
+            action,
+            reason,
+            performed_by,
+            now
+        ))
+
+        conn.commit()
+
+    finally:
+        conn.close()
 
 
 def get_quarantine_logs(limit=20):
-    """Retrieve audit history of quarantine actions."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT q.*, d.ip_address, d.hostname, d.device_name
-        FROM quarantine_logs q
-        JOIN devices d ON q.device_id = d.id
-        ORDER BY q.id DESC LIMIT ?
-    """, (limit,))
-    rows = [dict(r) for r in cur.fetchall()]
-    conn.close()
-    return rows
+    """Retrieve recent quarantine audit records."""
 
+    conn = get_connection()
+
+    try:
+        rows = conn.execute("""
+            SELECT
+                q.*,
+                d.ip_address,
+                d.hostname,
+                d.device_name
+            FROM quarantine_logs q
+            JOIN devices d ON q.device_id = d.id
+            ORDER BY q.id DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+
+        return [dict(row) for row in rows]
+
+    finally:
+        conn.close()
+
+
+# ==========================================================
+# NETWORK DASHBOARD STATISTICS
+# ==========================================================
 
 def get_network_stats():
-    """Aggregate statistics for the configured local network."""
+    """Aggregate monitoring statistics for local devices."""
+
     conn = get_connection()
-    cur = conn.cursor()
 
+    try:
+        all_devices = conn.execute("""
+            SELECT ip_address, status, risk_score
+            FROM devices
+        """).fetchall()
 
-    # Retrieve device records without deleting historical data
-    cur.execute("SELECT ip_address, status, risk_score FROM devices")
-    all_devices = cur.fetchall()
+        local_devices = [
+            device
+            for device in all_devices
+            if is_local_device_ip(device["ip_address"])
+        ]
 
-    local_devices = [
-        device for device in all_devices
-        if is_local_device_ip(device["ip_address"])
-    ]
+        total_devices = len(local_devices)
 
-    total_devices = len(local_devices)
+        online_devices = sum(
+            1 for device in local_devices
+            if device["status"] == "online"
+        )
 
-    online_devices = sum(
-        1 for device in local_devices
-        if device["status"] == "online"
-    )
+        quarantined_devices = sum(
+            1 for device in local_devices
+            if device["status"] == "quarantined"
+        )
 
-    quarantined_devices = sum(
-        1 for device in local_devices
-        if device["status"] == "quarantined"
-    )
+        high_risk_devices = sum(
+            1 for device in local_devices
+            if (device["risk_score"] or 0) >= 70
+        )
 
-    high_risk_devices = sum(
-        1 for device in local_devices
-        if device["risk_score"] >= 70
-    )
+        alert_rows = conn.execute("""
+            SELECT a.status, d.ip_address
+            FROM alerts a
+            JOIN devices d ON a.device_id = d.id
+            WHERE a.status = 'open'
+        """).fetchall()
 
-    # Preserve the existing global alert count for now
-    cur.execute("""
-        SELECT a.status, d.ip_address
-        FROM alerts a
-        JOIN devices d ON a.device_id = d.id
-        WHERE a.status = 'open'
-    """)
+        open_alerts = sum(
+            1 for alert in alert_rows
+            if is_local_device_ip(alert["ip_address"])
+        )
 
-    open_alerts = sum(
-        1 for alert in cur.fetchall()
-        if is_local_device_ip(alert["ip_address"])
-    )
+        return {
+            "total_devices": total_devices,
+            "online_devices": online_devices,
+            "quarantined_devices": quarantined_devices,
+            "open_alerts": open_alerts,
+            "high_risk_devices": high_risk_devices
+        }
 
-    conn.close()
-
-    return {
-        "total_devices": total_devices,
-        "online_devices": online_devices,
-        "quarantined_devices": quarantined_devices,
-        "open_alerts": open_alerts,
-        "high_risk_devices": high_risk_devices
-    }
+    finally:
+        conn.close()
