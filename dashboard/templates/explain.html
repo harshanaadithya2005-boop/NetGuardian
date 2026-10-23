@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>AI Explanation</h2>
+
+<div class="panel">
+  <h3>{{ alert['alert_type'] }} &mdash; {{ alert['ip_address'] }}</h3>
+  <p>Risk {{ alert['risk_score'] }} &nbsp;
+     <span class="badge {{ alert['severity'] }}">{{ alert['severity'] }}</span></p>
+</div>
+
+<div class="panel">
+  <h3>Summary</h3>
+  <p>{{ summary }}</p>
+  <h3>Recommendation</h3>
+  <p>{{ recommendation }}</p>
+  <p style="color:#94a3b8; font-size:12px;">Source: {{ source }}</p>
+</div>
+
+<a href="/alerts"><button type="button">Back to Alerts</button></a>
+{% endblock %}

@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Devices</h2>
+<table>
+  <tr><th>IP Address</th><th>MAC</th><th>Hostname</th><th>Type</th><th>Status</th><th>Last Seen</th></tr>
+  {% for d in devices %}
+  <tr>
+    <td>{{ d['ip_address'] }}</td>
+    <td>{{ d['mac_address'] }}</td>
+    <td>{{ d['hostname'] }}</td>
+    <td>{{ d['device_type'] }}</td>
+    <td>{{ d['status'] }}</td>
+    <td>{{ d['last_seen'] }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

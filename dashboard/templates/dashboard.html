@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="stats">
+  <div class="stat"><div class="num">{{ total }}</div><div class="lbl">TOTAL DEVICES</div></div>
+  <div class="stat"><div class="num green">{{ online }}</div><div class="lbl">ACTIVE ONLINE</div></div>
+  <div class="stat"><div class="num red">{{ quarantined }}</div><div class="lbl">QUARANTINED HOSTS</div></div>
+  <div class="stat"><div class="num amber">{{ open_alerts }}</div><div class="lbl">OPEN ALERTS</div></div>
+  <div class="stat"><div class="num red">{{ high_risk }}</div><div class="lbl">HIGH RISK HOSTS (SCORE ≥ 70)</div></div>
+</div>
+
+<div class="lab">
+  <div class="panel-head">
+    <h3>🧪 Attack Simulation &amp; Demonstration Lab</h3>
+    <form method="post" action="/simulate/reset"><button class="reset">⟲ Reset Simulation</button></form>
+  </div>
+  <p><small>Inject live attack vectors into the engine to test detection and automatic quarantine.</small></p>
+  <div class="lab-btns">
+    <form method="post" action="/simulate/portscan"><button>Simulate Port Scan (+30 Risk)</button></form>
+    <form method="post" action="/simulate/dns"><button>Simulate DNS Anomaly (+20 Risk)</button></form>
+    <form method="post" action="/simulate/spike"><button>Simulate Traffic Spike (+30 Risk)</button></form>
+    <form method="post" action="/simulate/rogue"><button>Inject Rogue Device</button></form>
+    <form method="post" action="/simulate/full"><button class="danger">Full Attack (Triggers Quarantine)</button></form>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="panel">
+    <div class="panel-head">
+      <h3>Discovered Network Devices</h3>
+      <span class="pill">{{ total }} IDENTIFIED</span>
+    </div>
+    <div class="scroll">
+      <table>
+        <tr>
+          <th>Device / Hostname</th><th>IP Address</th><th>MAC Address</th>
+          <th>Type</th><th>Status</th><th>Risk Score</th><th>Trust</th>
+        </tr>
+        {% for d in devices %}
+        <tr>
+          <td><b class="cyan">{{ d['device_name'] or d['hostname'] }}</b><br><small>{{ d['hostname'] }}</small></td>
+          <td><code>{{ d['ip_address'] }}</code></td>
+          <td>{{ d['mac_address'] }}</td>
+          <td><span class="tag">{{ d['device_type'] }}</span></td>
+          <td>
+            {% if d['status'] == 'quarantined' %}<span class="st q">⛔ QUARANTINED</span>
+            {% elif d['status'] == 'online' %}<span class="st on">● ONLINE</span>
+            {% else %}<span class="st off">○ OFFLINE</span>{% endif %}
+          </td>
+          <td>
+            <div class="bar"><div class="fill {% if d['risk_score'] >= 70 %}r{% elif d['risk_score'] >= 30 %}a{% else %}g{% endif %}" style="width: {{ d['risk_score'] }}%"></div></div>
+            <small>{{ d['risk_score'] }}/100</small>
+          </td>
+          <td>
+            {% if d['trusted'] %}<span class="trust ok">Trusted</span>{% else %}<span class="trust no">Untrusted</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h3>🔔 Security Alerts Feed</h3>
+      <span class="pill amber">{{ feed|length }} RECENT</span>
+    </div>
+    <div class="scroll">
+      {% for a in feed %}
+      <div class="feed {{ a['severity'] }}">
+        <div class="feed-top">
+          <b>{{ a['severity']|upper }}</b>
+          <b>{{ a['alert_type']|upper }}</b>
+          <small>{{ a['time'][11:19] }}</small>
+        </div>
+        <div>{{ a['description'] }}</div>
+        <small>Host: <code>{{ a['ip_address'] }}</code> ({{ a['hostname'] }})</small>
+        <div><a href="/alerts/{{ a['id'] }}/explain">Explain</a></div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+{% endblock %}
