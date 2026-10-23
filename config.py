@@ -55,3 +55,16 @@ def get_default_network():
 
 # Default target network (can be overridden by environment variable)
 TARGET_NETWORK = os.environ.get("TARGET_NETWORK", get_default_network())
+
+# NetGuardian Protection Modes
+# DEMO = Simulated quarantine without firewall changes
+# LIVE = Real Windows Firewall enforcement
+
+PROTECTION_MODE = os.environ.get(
+    "NETGUARDIAN_MODE", "DEMO"
+).strip().upper()
+
+if PROTECTION_MODE not in ("DEMO", "LIVE"):
+    raise ValueError(
+        "Invalid NETGUARDIAN_MODE. Use DEMO or LIVE."
+    )

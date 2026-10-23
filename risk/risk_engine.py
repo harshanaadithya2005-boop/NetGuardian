@@ -7,6 +7,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 import config
+import ipaddress
 from database.models import (
     get_all_devices,
     get_device_by_id,
@@ -151,7 +152,25 @@ def evaluate_device_risk(device_or_id, auto_quarantine=True):
 
     # Check automatic quarantine threshold
     quarantined = (current_status == "quarantined")
-    if auto_quarantine and total_risk >= config.RISK_THRESHOLD_HIGH and current_status != "quarantined":
+
+    # Check whether the device belongs to our local network
+    try:
+        local_network = ipaddress.ip_network(
+            config.TARGET_NETWORK, strict=False
+        )
+        is_local_device = (
+            ipaddress.ip_address(ip_address) in local_network
+        )
+    except ValueError:
+        is_local_device = False
+
+    # Automatically quarantine local devices only
+    if (
+        auto_quarantine
+        and is_local_device
+        and total_risk >= config.RISK_THRESHOLD_HIGH
+        and current_status != "quarantined"
+    ):
         reasons_text = ", ".join(active_indicators) if active_indicators else "Severe Risk"
         success, msg = quarantine_device(
             device_id=device_id,

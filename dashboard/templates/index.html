@@ -40,6 +40,40 @@
     </div>
 </section>
 
+<!-- Protection Mode Panel -->
+<section class="card protection-panel">
+    <div class="panel-header">
+        <div>
+            <h3>
+                <i class="fa-solid fa-shield-halved"></i>
+                NetGuardian Protection Mode
+            </h3>
+            <p class="panel-subtitle">
+                Current network security enforcement mode
+            </p>
+        </div>
+
+        {% if protection_mode == "DEMO" %}
+        <span class="badge badge-info">
+            DEMO MODE
+        </span>
+        {% else %}
+        <span class="badge badge-danger">
+            LIVE MODE
+        </span>
+        {% endif %}
+    </div>
+
+    <p>
+        {% if protection_mode == "DEMO" %}
+        Threat detection and risk scoring are active.
+        Quarantine is simulated without changing Windows Firewall rules.
+        {% else %}
+        Live protection is configured. Firewall enforcement may be active.
+        {% endif %}
+    </p>
+</section>
+
 <!-- Simulation Control Center -->
 <section class="card simulation-panel">
     <div class="panel-header">

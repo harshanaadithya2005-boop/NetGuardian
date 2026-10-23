@@ -2,6 +2,7 @@ import os
 import sys
 import threading
 import time
+import ipaddress
 from pathlib import Path
 # Ensure project root is in sys.path
 BASE_DIR = Path(__file__).resolve().parent
@@ -49,6 +50,13 @@ app = Flask(
 )
 app.secret_key = config.SECRET_KEY
 
+def is_local_ip(ip_address):
+    """Check whether an IP address belongs to the configured local network."""
+    try:
+        network = ipaddress.ip_network(config.TARGET_NETWORK, strict=False)
+        return ipaddress.ip_address(ip_address) in network
+    except (ValueError, TypeError):
+        return False
 
 # ---------------------------------------------------------
 # Web Dashboard HTML Routes
@@ -58,15 +66,25 @@ app.secret_key = config.SECRET_KEY
 def index():
     """Main NetGuardian Security Dashboard."""
     stats = get_network_stats()
-    devices = get_all_devices()
-    alerts = get_recent_alerts(limit=25)
+
+
+    devices = [
+        device for device in get_all_devices()
+        if is_local_ip(device.get("ip_address"))
+    ]
+    alerts = [
+        alert for alert in get_recent_alerts(limit=1000)
+        if is_local_ip(alert.get("ip_address"))
+    ][:25]
     traffic = get_recent_traffic(limit=25)
+
     return render_template(
         "index.html",
         stats=stats,
         devices=devices,
         alerts=alerts,
-        traffic=traffic
+        traffic=traffic,
+        protection_mode=config.PROTECTION_MODE
     )
 
 
