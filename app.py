@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, redirect, Response
 import csv
 import io
+import random
 from database.db import get_connection
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -20,35 +21,28 @@ app = Flask(
 @app.route("/")
 def dashboard():
     conn = get_connection()
-    device_count = conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0]
-    alert_count = conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
-    max_risk = conn.execute("SELECT COALESCE(MAX(risk_score), 0) FROM alerts").fetchone()[0]
-    latest = conn.execute(
-        "SELECT alert_type, risk_score, severity, status, time FROM alerts ORDER BY id DESC LIMIT 5"
-    ).fetchall()
-    severity_counts = []
-    for s in ["Low", "Medium", "High", "Critical"]:
-        severity_counts.append(
-            conn.execute("SELECT COUNT(*) FROM alerts WHERE severity = ?", (s,)).fetchone()[0]
-        )
-    conn.close()
+    total = conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0]
+    online = conn.execute("SELECT COUNT(*) FROM devices WHERE status = 'online'").fetchone()[0]
+    quarantined = conn.execute("SELECT COUNT(*) FROM devices WHERE status = 'quarantined'").fetchone()[0]
+    open_alerts = conn.execute(
+        "SELECT COUNT(*) FROM alerts WHERE status IN ('New', 'Investigating')"
+    ).fetchone()[0]
+    high_risk = conn.execute("SELECT COUNT(*) FROM devices WHERE risk_score >= 70").fetchone()[0]
 
-    if max_risk >= 80:
-        risk_level = "Critical"
-    elif max_risk >= 60:
-        risk_level = "High"
-    elif max_risk >= 30:
-        risk_level = "Medium"
-    else:
-        risk_level = "Low"
+    devices = conn.execute(
+        "SELECT * FROM devices ORDER BY risk_score DESC, id LIMIT 50"
+    ).fetchall()
+    feed = conn.execute(
+        "SELECT alerts.*, devices.ip_address, devices.hostname FROM alerts "
+        "JOIN devices ON alerts.device_id = devices.id ORDER BY alerts.id DESC LIMIT 25"
+    ).fetchall()
+    conn.close()
 
     return render_template(
         "dashboard.html",
-        device_count=device_count,
-        alert_count=alert_count,
-        risk_level=risk_level,
-        latest=latest,
-        severity_counts=severity_counts,
+        total=total, online=online, quarantined=quarantined,
+        open_alerts=open_alerts, high_risk=high_risk,
+        devices=devices, feed=feed,
     )
 
 
@@ -249,6 +243,101 @@ def api_latest_alert():
     if row is None:
         return jsonify({"id": 0})
     return jsonify(dict(row))
+
+def _alert(conn, device_id, alert_type, score, description):
+    if score >= 80:
+        severity = "Critical"
+    elif score >= 60:
+        severity = "High"
+    else:
+        severity = "Medium"
+    conn.execute(
+        "INSERT INTO alerts (device_id, alert_type, risk_score, severity, description, status, time) "
+        "VALUES (?, ?, ?, ?, ?, 'New', datetime('now', 'localtime'))",
+        (device_id, alert_type, score, severity, description),
+    )
+
+
+def _bump(conn, device_id, amount):
+    conn.execute(
+        "UPDATE devices SET risk_score = MIN(100, risk_score + ?) WHERE id = ?",
+        (amount, device_id),
+    )
+    row = conn.execute("SELECT risk_score FROM devices WHERE id = ?", (device_id,)).fetchone()
+    if row["risk_score"] >= 70:
+        conn.execute("UPDATE devices SET status = 'quarantined' WHERE id = ?", (device_id,))
+
+
+@app.route("/simulate/<kind>", methods=["POST"])
+def simulate(kind):
+    conn = get_connection()
+    dev = conn.execute(
+        "SELECT * FROM devices WHERE status != 'quarantined' ORDER BY RANDOM() LIMIT 1"
+    ).fetchone()
+    if dev is None:
+        conn.close()
+        return redirect("/")
+
+    ip = dev["ip_address"]
+    if kind == "portscan":
+        _alert(conn, dev["id"], "Port Scan", 65, f"{ip} probed many ports.")
+        _bump(conn, dev["id"], 30)
+    elif kind == "dns":
+        _alert(conn, dev["id"], "DNS Anomaly", 40, f"{ip} made unusual DNS requests.")
+        _bump(conn, dev["id"], 20)
+    elif kind == "spike":
+        _alert(conn, dev["id"], "Traffic Spike", 60, f"{ip} traffic far above normal.")
+        _bump(conn, dev["id"], 30)
+    elif kind == "rogue":
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        n = random.randint(200, 250)
+        mac = ":".join(f"{random.randint(0, 255):02X}" for _ in range(6))
+        conn.execute(
+            "INSERT OR IGNORE INTO devices (ip_address, mac_address, hostname, device_name, "
+            "device_type, first_seen, last_seen, status, trusted, risk_score) "
+            "VALUES (?, ?, ?, ?, 'Unknown', ?, ?, 'online', 0, 20)",
+            (f"172.16.0.{n}", mac, f"Rogue-{n}", f"Rogue-{n}", now, now),
+        )
+        rogue = conn.execute(
+            "SELECT id FROM devices WHERE ip_address = ?", (f"172.16.0.{n}",)
+        ).fetchone()
+        _alert(conn, rogue["id"], "Rogue Device", 85, f"Unknown device 172.16.0.{n} joined the network.")
+    elif kind == "full":
+        _alert(conn, dev["id"], "Port Scan", 65, f"{ip} probed many ports.")
+        _alert(conn, dev["id"], "Traffic Spike", 60, f"{ip} traffic far above normal.")
+        _bump(conn, dev["id"], 80)
+    conn.commit()
+    conn.close()
+    return redirect("/")
+
+
+@app.route("/simulate/reset", methods=["POST"])
+def simulate_reset():
+    conn = get_connection()
+    conn.execute("UPDATE devices SET risk_score = 0, status = 'online' WHERE status = 'quarantined' OR risk_score > 0")
+    conn.execute("DELETE FROM ai_reports")
+    conn.execute("DELETE FROM alerts")
+    conn.commit()
+    conn.close()
+    return redirect("/")
+
+
+@app.route("/devices/<int:device_id>/quarantine", methods=["POST"])
+def quarantine(device_id):
+    conn = get_connection()
+    conn.execute("UPDATE devices SET status = 'quarantined' WHERE id = ?", (device_id,))
+    conn.commit()
+    conn.close()
+    return redirect("/")
+
+
+@app.route("/devices/<int:device_id>/release", methods=["POST"])
+def release(device_id):
+    conn = get_connection()
+    conn.execute("UPDATE devices SET status = 'online', risk_score = 0 WHERE id = ?", (device_id,))
+    conn.commit()
+    conn.close()
+    return redirect("/")
 
 
 if __name__ == "__main__":

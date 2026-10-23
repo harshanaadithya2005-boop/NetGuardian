@@ -1,47 +1,85 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Dashboard</h2>
 
-<div class="cards">
-  <div class="card"><h3>Devices</h3><div class="value">{{ device_count }}</div></div>
-  <div class="card"><h3>Alerts</h3><div class="value">{{ alert_count }}</div></div>
-  <div class="card"><h3>Risk</h3><div class="value"><span class="badge {{ risk_level }}">{{ risk_level }}</span></div></div>
+<div class="stats">
+  <div class="stat"><div class="num">{{ total }}</div><div class="lbl">TOTAL DEVICES</div></div>
+  <div class="stat"><div class="num green">{{ online }}</div><div class="lbl">ACTIVE ONLINE</div></div>
+  <div class="stat"><div class="num red">{{ quarantined }}</div><div class="lbl">QUARANTINED HOSTS</div></div>
+  <div class="stat"><div class="num amber">{{ open_alerts }}</div><div class="lbl">OPEN ALERTS</div></div>
+  <div class="stat"><div class="num red">{{ high_risk }}</div><div class="lbl">HIGH RISK HOSTS (SCORE ≥ 70)</div></div>
 </div>
 
-<div class="panel">
-  <h3>Alerts by Severity</h3>
-  <canvas id="sevChart" height="90"></canvas>
+<div class="lab">
+  <div class="panel-head">
+    <h3>🧪 Attack Simulation &amp; Demonstration Lab</h3>
+    <form method="post" action="/simulate/reset"><button class="reset">⟲ Reset Simulation</button></form>
+  </div>
+  <p><small>Inject live attack vectors into the engine to test detection and automatic quarantine.</small></p>
+  <div class="lab-btns">
+    <form method="post" action="/simulate/portscan"><button>Simulate Port Scan (+30 Risk)</button></form>
+    <form method="post" action="/simulate/dns"><button>Simulate DNS Anomaly (+20 Risk)</button></form>
+    <form method="post" action="/simulate/spike"><button>Simulate Traffic Spike (+30 Risk)</button></form>
+    <form method="post" action="/simulate/rogue"><button>Inject Rogue Device</button></form>
+    <form method="post" action="/simulate/full"><button class="danger">Full Attack (Triggers Quarantine)</button></form>
+  </div>
 </div>
 
-<div class="panel">
-  <h3>Latest Alerts</h3>
-  <table>
-    <tr><th>Type</th><th>Risk</th><th>Severity</th><th>Status</th><th>Time</th></tr>
-    {% for a in latest %}
-    <tr>
-      <td>⚠ {{ a['alert_type'] }}</td>
-      <td>{{ a['risk_score'] }}</td>
-      <td><span class="badge {{ a['severity'] }}">{{ a['severity'] }}</span></td>
-      <td>{{ a['status'] }}</td>
-      <td>{{ a['time'] }}</td>
-    </tr>
-    {% endfor %}
-  </table>
+<div class="grid">
+  <div class="panel">
+    <div class="panel-head">
+      <h3>Discovered Network Devices</h3>
+      <span class="pill">{{ total }} IDENTIFIED</span>
+    </div>
+    <div class="scroll">
+      <table>
+        <tr>
+          <th>Device / Hostname</th><th>IP Address</th><th>MAC Address</th>
+          <th>Type</th><th>Status</th><th>Risk Score</th><th>Trust</th>
+        </tr>
+        {% for d in devices %}
+        <tr>
+          <td><b class="cyan">{{ d['device_name'] or d['hostname'] }}</b><br><small>{{ d['hostname'] }}</small></td>
+          <td><code>{{ d['ip_address'] }}</code></td>
+          <td>{{ d['mac_address'] }}</td>
+          <td><span class="tag">{{ d['device_type'] }}</span></td>
+          <td>
+            {% if d['status'] == 'quarantined' %}<span class="st q">⛔ QUARANTINED</span>
+            {% elif d['status'] == 'online' %}<span class="st on">● ONLINE</span>
+            {% else %}<span class="st off">○ OFFLINE</span>{% endif %}
+          </td>
+          <td>
+            <div class="bar"><div class="fill {% if d['risk_score'] >= 70 %}r{% elif d['risk_score'] >= 30 %}a{% else %}g{% endif %}" style="width: {{ d['risk_score'] }}%"></div></div>
+            <small>{{ d['risk_score'] }}/100</small>
+          </td>
+          <td>
+            {% if d['trusted'] %}<span class="trust ok">Trusted</span>{% else %}<span class="trust no">Untrusted</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h3>🔔 Security Alerts Feed</h3>
+      <span class="pill amber">{{ feed|length }} RECENT</span>
+    </div>
+    <div class="scroll">
+      {% for a in feed %}
+      <div class="feed {{ a['severity'] }}">
+        <div class="feed-top">
+          <b>{{ a['severity']|upper }}</b>
+          <b>{{ a['alert_type']|upper }}</b>
+          <small>{{ a['time'][11:19] }}</small>
+        </div>
+        <div>{{ a['description'] }}</div>
+        <small>Host: <code>{{ a['ip_address'] }}</code> ({{ a['hostname'] }})</small>
+        <div><a href="/alerts/{{ a['id'] }}/explain">Explain</a></div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<script>
-  new Chart(document.getElementById('sevChart'), {
-    type: 'bar',
-    data: {
-      labels: ['Low', 'Medium', 'High', 'Critical'],
-      datasets: [{
-        label: 'Alerts',
-        data: {{ severity_counts|tojson }},
-        backgroundColor: ['#16a34a', '#eab308', '#ea580c', '#dc2626']
-      }]
-    },
-    options: { scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }
-  });
-</script>
 {% endblock %}
