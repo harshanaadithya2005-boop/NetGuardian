@@ -17,23 +17,45 @@ def detect_port_scan(ports, threshold=config.PORT_SCAN_THRESHOLD):
     return len(unique_ports) >= threshold
 
 
-def check_port_scan(traffic_or_ports, threshold=config.PORT_SCAN_THRESHOLD, source_ip=None):
-    """
-    Evaluate port scanning from a list of ports or a list of traffic record dicts.
-    Returns structured detection details.
-    """
-    if not traffic_or_ports:
-        return {"detected": False, "type": "port_scan", "risk_weight": 0}
 
-    # Extract port numbers whether passed as ints or dicts
+def check_port_scan(
+    traffic_or_ports,
+    threshold=config.PORT_SCAN_THRESHOLD,
+    source_ip=None
+):
+    """Detect scans using ports targeted by the specified source device."""
+
+    if not traffic_or_ports:
+        return {
+            "detected": False,
+            "type": "port_scan",
+            "risk_weight": 0,
+            "unique_ports_count": 0
+        }
+
     if isinstance(traffic_or_ports[0], dict):
-        ports = [r.get("destination_port") for r in traffic_or_ports if r.get("destination_port")]
-        if not source_ip and traffic_or_ports:
-            source_ip = traffic_or_ports[0].get("source_ip")
+        records = traffic_or_ports
+
+        # Only count traffic originating from the device being evaluated.
+        if source_ip:
+            records = [
+                r for r in records
+                if r.get("source_ip") == source_ip
+            ]
+
+        ports = [
+            r.get("destination_port")
+            for r in records
+            if r.get("destination_port") is not None
+        ]
     else:
         ports = list(traffic_or_ports)
 
-    unique_ports = sorted(list(set(ports)))
+    unique_ports = sorted({
+        int(port) for port in ports
+        if str(port).isdigit() and 1 <= int(port) <= 65535
+    })
+
     is_scan = len(unique_ports) >= threshold
 
     if is_scan:
@@ -45,7 +67,10 @@ def check_port_scan(traffic_or_ports, threshold=config.PORT_SCAN_THRESHOLD, sour
             "source_ip": source_ip,
             "unique_ports_count": len(unique_ports),
             "scanned_ports": unique_ports[:15],
-            "message": f"Port scan activity detected: {len(unique_ports)} distinct ports targeted"
+            "message": (
+                f"Port scan activity detected: "
+                f"{len(unique_ports)} distinct destination ports"
+            )
         }
 
     return {

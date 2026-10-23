@@ -1,7 +1,24 @@
+import sqlite3
 import ipaddress
 import config
 from datetime import datetime
 from database.db import get_connection
+
+PLACEHOLDER_MACS = {
+    None,
+    "",
+    "UNKNOWN",
+    "AUTO-CAPTURED",
+    "LOCAL-HOST"
+}
+
+
+def is_placeholder_mac(mac_address):
+    """Check whether a MAC address is missing or temporary."""
+    return (
+        mac_address is None
+        or mac_address.strip().upper() in PLACEHOLDER_MACS
+    )
 
 def is_local_device_ip(ip_address):
     """Return True only for valid IP addresses in the configured network."""
@@ -14,6 +31,7 @@ def is_local_device_ip(ip_address):
     except (ValueError, TypeError):
         return False
 
+
 def add_or_update_device(
     ip_address,
     mac_address,
@@ -22,90 +40,197 @@ def add_or_update_device(
     device_type=None,
     timestamp=None
 ):
-    """Add a new device or update an existing device."""
+    """Add or update a device while preserving verified identities."""
     if timestamp is None:
         timestamp = datetime.now().isoformat(timespec="seconds")
 
+    if not ip_address:
+        raise ValueError("An IP address is required for discovery.")
+
+    # Never overwrite a verified MAC address with a placeholder.
+    if is_placeholder_mac(mac_address):
+        mac_address = None
+
     connection = get_connection()
-    cursor = connection.cursor()
 
-    existing_device = None
+    try:
+        cursor = connection.cursor()
 
-    # Identify by MAC address if valid, otherwise by IP address
-    if mac_address and mac_address not in ["UNKNOWN", "AUTO-CAPTURED", "LOCAL-HOST"]:
-        cursor.execute(
-            "SELECT id, status, device_name, device_type FROM devices WHERE mac_address = ?",
-            (mac_address,)
+        # Normalize the MAC address before comparing identities.
+        normalized_mac = (
+            mac_address.strip().upper()
+            if mac_address
+            else None
         )
-        existing_device = cursor.fetchone()
 
-    if not existing_device:
+        valid_mac = not is_placeholder_mac(normalized_mac)
+
+        existing_device = None
+
+        # Prefer a verified MAC address over an IP address.
+        if valid_mac:
+            cursor.execute(
+                """
+                SELECT id, status, mac_address
+                FROM devices
+                WHERE LOWER(mac_address) = LOWER(?)
+                """,
+                (normalized_mac,)
+            )
+            existing_device = cursor.fetchone()
+
+        # Check who currently owns the requested IP.
         cursor.execute(
-            "SELECT id, status, device_name, device_type FROM devices WHERE ip_address = ?",
+            """
+            SELECT id, status, mac_address
+            FROM devices
+            WHERE ip_address = ?
+            """,
             (ip_address,)
         )
-        existing_device = cursor.fetchone()
+        ip_owner = cursor.fetchone()
 
-    if existing_device:
-        device_id = existing_device["id"]
-        # Maintain existing status if quarantined, otherwise set online
-        current_status = existing_device["status"]
-        new_status = "quarantined" if current_status == "quarantined" else "online"
+        # If the IP belongs to another verified identity,
+        # do not overwrite that identity.
+        if existing_device is None and ip_owner is not None:
+            owner_mac = ip_owner["mac_address"]
 
-        cursor.execute("""
-            UPDATE devices
-            SET ip_address = ?,
-                mac_address = COALESCE(?, mac_address),
-                hostname = COALESCE(?, hostname),
-                device_type = COALESCE(?, device_type),
-                last_seen = ?,
-                status = ?
-            WHERE id = ?
-        """, (
-            ip_address,
-            mac_address,
-            hostname,
-            device_type,
-            timestamp,
-            new_status,
-            device_id
-        ))
-    else:
-        # Infer default device name / type if not provided
-        inferred_name = device_name or (hostname if hostname and hostname != "Unknown" else f"Device-{ip_address.split('.')[-1]}")
-        inferred_type = device_type or infer_device_type(inferred_name, mac_address)
+            if (
+                not valid_mac
+                or is_placeholder_mac(owner_mac)
+                or owner_mac.strip().lower()
+                == normalized_mac.lower()
+            ):
+                existing_device = ip_owner
+            else:
+                print(
+                    "[DeviceDiscovery] Identity conflict at "
+                    f"{ip_address}: existing device "
+                    f"{ip_owner['id']} has a different verified MAC."
+                )
+                return None
 
-        cursor.execute("""
-            INSERT INTO devices (
-                ip_address,
-                mac_address,
-                hostname,
-                device_name,
-                device_type,
-                first_seen,
-                last_seen,
-                status,
-                trusted,
-                risk_score
+        if existing_device is not None:
+            device_id = existing_device["id"]
+
+            ip_conflict = (
+                ip_owner is not None
+                and ip_owner["id"] != device_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'online', 0, 20)
-        """, (
-            ip_address,
-            mac_address,
-            hostname,
-            inferred_name,
-            inferred_type,
-            timestamp,
-            timestamp
-        ))
-        device_id = cursor.lastrowid
 
-        # Also initialize a default baseline profile for this new device
-        init_default_profile(device_id, inferred_type, cursor)
+            if ip_conflict:
+                print(
+                    "[DeviceDiscovery] IP conflict detected: "
+                    f"{ip_address} belongs to device "
+                    f"{ip_owner['id']}, but MAC matches "
+                    f"device {device_id}."
+                )
 
-    connection.commit()
-    connection.close()
-    return device_id
+            current_status = existing_device["status"]
+
+            new_status = (
+                    "quarantined" if current_status == "quarantined"
+                    else current_status if ip_conflict
+                    else "online"
+            )
+
+            # Preserve the old IP if another record owns
+            # the requested IP. Never overwrite a verified
+            # MAC with a placeholder.
+            cursor.execute(
+                """
+                UPDATE devices
+                SET
+                    ip_address = CASE
+                        WHEN ? THEN ip_address
+                        ELSE ?
+                    END,
+                    mac_address = CASE
+                        WHEN ? THEN ?
+                        ELSE mac_address
+                    END,
+                    hostname = COALESCE(?, hostname),
+                    device_type = COALESCE(?, device_type),
+                    last_seen = ?,
+                    status = ?
+                WHERE id = ?
+                """,
+                (
+                    ip_conflict,
+                    ip_address,
+                    valid_mac,
+                    normalized_mac,
+                    hostname,
+                    device_type,
+                    timestamp,
+                    new_status,
+                    device_id
+                )
+            )
+
+        else:
+            inferred_name = (
+                device_name
+                or (
+                    hostname
+                    if hostname and hostname != "Unknown"
+                    else f"Device-{ip_address.split('.')[-1]}"
+                )
+            )
+
+            inferred_type = (
+                device_type
+                or infer_device_type(
+                    inferred_name,
+                    normalized_mac
+                )
+            )
+
+            cursor.execute(
+                """
+                INSERT INTO devices (
+                    ip_address,
+                    mac_address,
+                    hostname,
+                    device_name,
+                    device_type,
+                    first_seen,
+                    last_seen,
+                    status,
+                    trusted,
+                    risk_score
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'online', 0, 20)
+                """,
+                (
+                    ip_address,
+                    normalized_mac,
+                    hostname,
+                    inferred_name,
+                    inferred_type,
+                    timestamp,
+                    timestamp
+                )
+            )
+
+            device_id = cursor.lastrowid
+
+            init_default_profile(
+                device_id,
+                inferred_type,
+                cursor
+            )
+
+        connection.commit()
+        return device_id
+
+    except Exception:
+        connection.rollback()
+        raise
+
+    finally:
+        connection.close()
+
 
 
 def mark_missing_devices_offline(discovered_ips):
@@ -182,6 +307,22 @@ def get_all_devices():
     conn.close()
     return rows
 
+def get_device_by_mac(mac_address):
+    """Retrieve a device using its verified MAC address."""
+    if is_placeholder_mac(mac_address):
+        return None
+
+    connection = get_connection()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            "SELECT * FROM devices WHERE LOWER(mac_address) = LOWER(?)",
+            (mac_address,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        connection.close()
 
 def get_device_by_id(device_id):
     """Retrieve a single device by its primary key ID."""
@@ -238,55 +379,90 @@ def log_traffic(
     destination_port=None,
     packet_size=0,
     dns_query=None,
-    timestamp=None
+    timestamp=None,
+    is_simulated=False
 ):
-    """Record a traffic flow packet/session."""
+    """Record a traffic flow, distinguishing real and simulated traffic."""
     if timestamp is None:
         timestamp = datetime.now().isoformat(timespec="seconds")
 
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO traffic (
-            device_id, source_ip, destination_ip, protocol,
-            destination_port, packet_size, dns_query, timestamp
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        device_id,
-        source_ip,
-        destination_ip,
-        protocol,
-        destination_port,
-        packet_size,
-        dns_query,
-        timestamp
-    ))
-    conn.commit()
-    conn.close()
+
+    try:
+        cur = conn.cursor()
+
+        cur.execute("""
+            INSERT INTO traffic (
+                device_id, source_ip, destination_ip, protocol,
+                destination_port, packet_size, dns_query,
+                timestamp, is_simulated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            device_id,
+            source_ip,
+            destination_ip,
+            protocol,
+            destination_port,
+            packet_size,
+            dns_query,
+            timestamp,
+            int(is_simulated)
+        ))
+
+        conn.commit()
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
 
 
-def get_recent_traffic(limit=50, device_id=None):
-    """Get the most recent traffic records."""
+def get_recent_traffic(limit=50, device_id=None, minutes=None, is_simulated=None):
+    """Get recent traffic, optionally filtered by device and time."""
     conn = get_connection()
-    cur = conn.cursor()
-    if device_id:
-        cur.execute("""
+
+    try:
+        cur = conn.cursor()
+
+        query = """
             SELECT t.*, d.hostname, d.device_name
             FROM traffic t
             JOIN devices d ON t.device_id = d.id
-            WHERE t.device_id = ?
-            ORDER BY t.id DESC LIMIT ?
-        """, (device_id, limit))
-    else:
-        cur.execute("""
-            SELECT t.*, d.hostname, d.device_name
-            FROM traffic t
-            JOIN devices d ON t.device_id = d.id
-            ORDER BY t.id DESC LIMIT ?
-        """, (limit,))
-    rows = [dict(r) for r in cur.fetchall()]
-    conn.close()
-    return rows
+            WHERE 1 = 1
+        """
+        params = []
+
+        if device_id is not None:
+            query += " AND t.device_id = ?"
+            params.append(device_id)
+
+        if is_simulated is not None:
+            query += " AND t.is_simulated = ?"
+            params.append(int(is_simulated))
+
+        if minutes is not None:
+            from datetime import timedelta
+
+            if minutes <= 0:
+                raise ValueError("minutes must be greater than zero")
+
+            cutoff = (
+                datetime.now() - timedelta(minutes=minutes)
+            ).isoformat(timespec="seconds")
+
+            query += " AND t.timestamp >= ?"
+            params.append(cutoff)
+
+        query += " ORDER BY t.id DESC LIMIT ?"
+        params.append(limit)
+
+        cur.execute(query, params)
+        return [dict(row) for row in cur.fetchall()]
+
+    finally:
+        conn.close()
 
 
 def create_alert(device_id, alert_type, risk_score, severity, description, timestamp=None):

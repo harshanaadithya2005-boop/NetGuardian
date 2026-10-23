@@ -689,6 +689,16 @@ def api_simulate(attack_type):
     return jsonify({"status": "success", "message": msg})
 
 
+@app.route("/api/simulate/history", methods=["GET"])
+def api_simulation_history():
+    """Return demonstration events without accessing the real database."""
+    return jsonify({
+        "status": "success",
+        "simulation": True,
+        "events": sim.get_simulation_history()
+    })
+
+
 # ---------------------------------------------------------
 # Background Engine Tasks
 # ---------------------------------------------------------

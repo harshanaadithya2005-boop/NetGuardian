@@ -47,6 +47,7 @@ def initialize_database():
             packet_size INTEGER DEFAULT 0,
             dns_query TEXT,
             timestamp TEXT NOT NULL,
+            is_simulated INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
         );
 

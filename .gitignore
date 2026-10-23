@@ -5,3 +5,17 @@ __pycache__/
 .env
 .vscode/
 *.db.backup
+/Project NetGuardian/
+# Duplicate local project copy
+/Project NetGuardian/
+
+# Temporary source-code backups
+*.backup
+*.before_safe_fix
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local virtual environment
+.venv/

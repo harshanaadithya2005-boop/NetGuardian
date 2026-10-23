@@ -9,20 +9,51 @@
   <div class="stat"><div class="num red">{{ high_risk }}</div><div class="lbl">HIGH RISK HOSTS (SCORE ≥ 70)</div></div>
 </div>
 
+
 <div class="lab">
-  <div class="panel-head">
-    <h3>🧪 Attack Simulation &amp; Demonstration Lab</h3>
-    <form method="post" action="/simulate/reset"><button class="reset">⟲ Reset Simulation</button></form>
-  </div>
-  <p><small>Inject live attack vectors into the engine to test detection and automatic quarantine.</small></p>
-  <div class="lab-btns">
-    <form method="post" action="/simulate/portscan"><button>Simulate Port Scan (+30 Risk)</button></form>
-    <form method="post" action="/simulate/dns"><button>Simulate DNS Anomaly (+20 Risk)</button></form>
-    <form method="post" action="/simulate/spike"><button>Simulate Traffic Spike (+30 Risk)</button></form>
-    <form method="post" action="/simulate/rogue"><button>Inject Rogue Device</button></form>
-    <form method="post" action="/simulate/full"><button class="danger">Full Attack (Triggers Quarantine)</button></form>
-  </div>
+    <div class="panel-head">
+        <h3>⚗ Attack Simulation &amp; Demonstration Lab</h3>
+<button type="button" class="reset" onclick="triggerSimulation('reset')">
+    ↻ Reset Simulation
+</button>
+    </div>
+
+    <p>
+        <small>
+            Run isolated security demonstrations using fictional devices.
+            Simulated attacks calculate risk scores and quarantine decisions
+            without modifying real network devices, alerts, or traffic records.
+        </small>
+    </p>
+
+    <div class="lab-btns">
+       
+<div class="lab-btns">
+    <button type="button" onclick="triggerSimulation('port_scan')">
+        Simulate Port Scan (+30 Risk)
+    </button>
+
+    <button type="button" onclick="triggerSimulation('dns_anomaly')">
+        Simulate DNS Anomaly (+20 Risk)
+    </button>
+
+    <button type="button" onclick="triggerSimulation('traffic_spike')">
+        Simulate Traffic Spike (+15 Risk)
+    </button>
+
+    <button type="button" onclick="triggerSimulation('rogue_device')">
+        Simulate Rogue Device (+20 Risk)
+    </button>
+
+    <button type="button" class="danger"
+            onclick="triggerSimulation('critical_attack')">
+        Full Attack (Simulated Quarantine)
+    </button>
 </div>
+
+    </div>
+</div>
+
 
 <div class="grid">
   <div class="panel">
