@@ -28,6 +28,7 @@ if not venv_python.exists():
 if venv_python.exists() and Path(sys.executable).resolve() != venv_python.resolve():
     try:
         import flask
+        import requests, dotenv, reportlab
         import scapy
     except ImportError:
         print(f"[NetGuardian] Detected dependencies in virtual environment. Launching with: {venv_python}")

@@ -7,6 +7,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 import config
+import ipaddress
 
 
 def detect_port_scan(ports, threshold=config.PORT_SCAN_THRESHOLD):
@@ -77,7 +78,19 @@ def check_port_scan(
         if str(port).isdigit() and 1 <= int(port) <= 65535
     })
 
-    is_scan = len(unique_ports) >= threshold
+    targets=set()
+    if isinstance(traffic_or_ports[0],dict):
+        for r in records:
+            if source_ip and r.get('source_ip')!=source_ip:continue
+            if str(r.get('protocol','')).upper()=='TCP' and r.get('tcp_flags')=='S' and r.get('destination_ip'):
+                targets.add(r['destination_ip'])
+    local_targets=set()
+    for target in targets:
+        try:
+            if ipaddress.ip_address(target) in ipaddress.ip_network(config.TARGET_NETWORK,strict=False):local_targets.add(target)
+        except ValueError:pass
+    horizontal=len(local_targets)>=config.PORT_SCAN_TARGET_THRESHOLD and len(unique_ports)==1 and unique_ports[0] not in {53,80,123,443}
+    is_scan = len(unique_ports) >= threshold or horizontal
 
     if is_scan:
         return {
@@ -88,10 +101,14 @@ def check_port_scan(
             "source_ip": source_ip,
             "unique_ports_count": len(unique_ports),
             "scanned_ports": unique_ports[:15],
+            "packet_count":len(ports),
+            "destination_count":len(targets),
+            "local_target_count":len(local_targets),
+            "scan_style":"HORIZONTAL" if horizontal else "VERTICAL_OR_MIXED",
             "message": (
                 f"Potential TCP port scan detected: "
                 f"SYN attempts to {len(unique_ports)} "
-                f"distinct destination ports"
+                f"distinct destination ports across {len(targets)} destinations"
             )
         }
 

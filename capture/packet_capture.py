@@ -20,10 +20,13 @@ from database.models import (
     log_traffic
 )
 from discovery.device_discovery import detect_active_interface
+from capture.worker_health import CaptureWorkerHealth
 from monitoring.traffic_monitor import (
     create_traffic_table,
     save_traffic_record
 )
+from database.db import get_connection,is_isolated
+from analytics.capture_sessions_v2 import start_capture_session_v2, finish_capture_session_v2
 
 try:
     from scapy.all import (
@@ -89,6 +92,18 @@ def get_local_ip():
 # Background thread control
 _capture_thread = None
 _stop_capture = threading.Event()
+_capture_lock = threading.RLock()
+capture_session_id = None
+
+# Thread-safe health state for the actual packet-capture worker.
+capture_health = CaptureWorkerHealth(
+    max_write_age_seconds=75
+)
+
+
+def get_capture_health():
+    """Return the latest capture health snapshot."""
+    return capture_health.snapshot()
 
 
 def get_protocol(packet):
@@ -111,6 +126,9 @@ def process_packet(packet):
     if not SCAPY_AVAILABLE or not packet.haslayer(IP):
         return
 
+    isolated=is_isolated()
+    if not isolated:capture_health.packet_received()
+
     try:
         ip_layer = packet.getlayer(IP)
         source_ip = ip_layer.src
@@ -129,18 +147,20 @@ def process_packet(packet):
         protocol = get_protocol(packet)
 
         # Update running in-memory statistics.
-        traffic_stats["total_packets"] += 1
-        traffic_stats["total_bytes"] += packet_size
-        traffic_stats[protocol] += 1
+        if not isolated:
+            traffic_stats["total_packets"] += 1
+            traffic_stats["total_bytes"] += packet_size
+            traffic_stats[protocol] += 1
 
-        if source_ip not in device_traffic:
+        if not isolated and source_ip not in device_traffic:
             device_traffic[source_ip] = {
                 "packets": 0,
                 "bytes": 0
             }
 
-        device_traffic[source_ip]["packets"] += 1
-        device_traffic[source_ip]["bytes"] += packet_size
+        if not isolated:
+            device_traffic[source_ip]["packets"] += 1
+            device_traffic[source_ip]["bytes"] += packet_size
 
         # Extract port and DNS information.
         source_port = None
@@ -157,7 +177,7 @@ def process_packet(packet):
             source_port = packet[UDP].sport
             destination_port = packet[UDP].dport
 
-            if packet.haslayer(DNS) and packet.haslayer(DNSQR):
+            if packet.haslayer(DNS) and packet.haslayer(DNSQR) and packet[DNS].qr == 0:
                 protocol = "DNS"
 
                 try:
@@ -236,80 +256,122 @@ def process_packet(packet):
             and candidate_mac.lower() == local_mac
         )
 
+
         # 4. Prefer the verified local MAC identity.
         if is_local_desktop:
             dev = get_device_by_mac(local_mac)
 
-            if dev:
-                print(
-                    "[PacketCapture] Local desktop identified "
-                    f"as device {dev['id']}"
-                )
-            else:
+            if not dev:
                 # Do not assume a missing MAC record is safe.
                 dev = get_device_by_ip(source_ip_for_device)
+
 
         else:
             # For other devices, use the existing IP lookup.
             # Their identity is not verified by this lookup.
             dev = get_device_by_ip(source_ip_for_device)
 
+        # Reject an Ethernet identity mismatch rather than attributing traffic
+        # from a reassigned IP to the old device. Routed inbound traffic uses
+        # the local destination MAC, never the remote sender's gateway MAC.
+        if dev and candidate_mac and dev.get("mac_address"):
+            if candidate_mac.upper() != dev["mac_address"].upper():
+                return
+
         # 5. Register an unknown IP only when no record exists.
 
+
         if not dev:
-            # Do not create placeholder devices from observed traffic.
-            # Device discovery is responsible for registering devices.
-            print(
-                "[PacketCapture] Unregistered local device observed: "
-                f"{source_ip_for_device}. "
-                "Traffic statistics were collected, but device-specific "
-                "logging was skipped."
-            )
+            # Device discovery registers network devices.
+            # Do not create placeholder identities from packets.
+            # Packet statistics have already been collected.
             return
         else:
             dev_id = dev["id"]
 
 
+
         # 6. Log traffic with its original source and destination.
-        log_traffic(
-            device_id=dev_id,
-            source_ip=source_ip,
-            destination_ip=destination_ip,
-            protocol=protocol,
-            destination_port=destination_port,
-            packet_size=packet_size,
-            dns_query=dns_query,
-            timestamp=timestamp,
-            tcp_flags=tcp_flags
-        )
+        # Mark persistence successful ONLY after log_traffic
+        # has returned (its SQLite transaction has committed).
+        try:
+            log_traffic(
+                device_id=dev_id,
+                source_ip=source_ip,
+                destination_ip=destination_ip,
+                protocol=protocol,
+                destination_port=destination_port,
+                packet_size=packet_size,
+                dns_query=dns_query,
+                timestamp=timestamp,
+                tcp_flags=tcp_flags
+            )
+
+        except Exception as error:
+            if not isolated:capture_health.persistence_failed(error=error)
+            raise
+
+        else:
+            if not isolated:capture_health.traffic_persisted()
 
     except Exception as e:
         print(f"[PacketCapture] Packet processing error: {e}")
 
 
 def _sniff_worker(interface):
-    """Background packet capture worker."""
+    """Background packet capture worker with health tracking."""
+
     print(
         "[PacketCapture] Passive sniffing started "
         f"on interface: {interface}"
     )
 
-    create_traffic_table()
+    # Start a fresh health session for this worker.
+    capture_health.start()
+
+    global capture_session_id
+    worker_error = None
+    session_id = None
 
     try:
-        sniff(
-            iface=interface,
-            prn=process_packet,
-            store=False,
-            stop_filter=lambda p: _stop_capture.is_set()
+        create_traffic_table()
+        conn = get_connection()
+        try:
+            session_id = start_capture_session_v2(conn, datetime.now())
+            conn.commit()
+            capture_session_id = session_id
+        finally:
+            conn.close()
+        while not _stop_capture.is_set():
+            # Timeout lets shutdown complete even on a completely quiet link.
+            sniff(iface=interface, prn=process_packet, store=False, timeout=1,
+                  stop_filter=lambda p: _stop_capture.is_set())
+
+    except Exception as error:
+        worker_error = error
+
+        print(
+            f"[PacketCapture] Sniffing error: {error}"
         )
-    except Exception as e:
-        print(f"[PacketCapture] Sniffing error: {e}")
 
-    print("[PacketCapture] Sniffing stopped.")
+    finally:
+        # A worker that has exited must never keep
+        # reporting healthy capture.
+        capture_health.stop(error=worker_error)
+        if session_id:
+            conn = get_connection()
+            try:
+                finish_capture_session_v2(conn, session_id, datetime.now(),
+                                          reason="ERROR" if worker_error else "STOPPED")
+                conn.commit()
+            finally:
+                conn.close()
+        capture_session_id = None
+
+        print("[PacketCapture] Sniffing stopped.")
 
 
-def start_capture(interface=None, packet_count=None):
+def _start_capture(interface=None, packet_count=None):
     """
     Start packet capture.
 
@@ -328,7 +390,9 @@ def start_capture(interface=None, packet_count=None):
         )
         return False
 
+    global INTERFACE
     iface = interface or detect_active_interface()
+    INTERFACE = iface
 
     if iface is None:
         print("[PacketCapture] No active interface found.")
@@ -395,10 +459,17 @@ def start_capture(interface=None, packet_count=None):
     return True
 
 
+def start_capture(interface=None, packet_count=None):
+    with _capture_lock:
+        return _start_capture(interface, packet_count)
+
+
 def stop_capture():
     """Request that the background packet sniffer stop."""
     global _stop_capture
     _stop_capture.set()
+    if _capture_thread and _capture_thread is not threading.current_thread():
+        _capture_thread.join(timeout=3)
 
 
 def is_capturing():

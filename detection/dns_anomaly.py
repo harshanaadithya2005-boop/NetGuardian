@@ -32,7 +32,7 @@ def calculate_entropy(text):
     return -sum((count / length) * math.log2(count / length) for count in counts.values())
 
 
-def check_dns_anomaly(dns_queries_or_traffic, failed_queries=0, source_ip=None, max_length=config.DNS_MAX_DOMAIN_LENGTH):
+def check_dns_anomaly(dns_queries_or_traffic, failed_queries=0, source_ip=None, max_length=config.DNS_MAX_DOMAIN_LENGTH, baseline_query_rate=None):
     """
     Analyze DNS queries for anomalies:
     1. Unusually long domain strings (DNS exfiltration/tunneling)
@@ -73,6 +73,7 @@ def check_dns_anomaly(dns_queries_or_traffic, failed_queries=0, source_ip=None, 
                     continue
 
                 query_key = (
+                    r.get('id'),
                     r.get("source_ip"),
                     domain.strip().lower(),
                     r.get("timestamp")
@@ -90,6 +91,7 @@ def check_dns_anomaly(dns_queries_or_traffic, failed_queries=0, source_ip=None, 
 
 
     anomalies = []
+    entropy_domains=set()
 
     for domain in queries:
         clean_domain = domain.strip().lower()
@@ -103,7 +105,9 @@ def check_dns_anomaly(dns_queries_or_traffic, failed_queries=0, source_ip=None, 
         if subdomains:
             main_sub = subdomains[0]
             if len(main_sub) > 15 and calculate_entropy(main_sub) > 3.6:
-                anomalies.append(f"High entropy DGA/Tunneling pattern: {clean_domain}")
+                entropy_domains.add(clean_domain)
+    if len(entropy_domains)>=3:
+        anomalies.append(f'High entropy pattern across {len(entropy_domains)} distinct domains; investigate query evidence')
 
     # Detect high-volume DNS activity involving many distinct domains.
     # Repeated requests to a small group of domains are not sufficient
@@ -115,8 +119,9 @@ def check_dns_anomaly(dns_queries_or_traffic, failed_queries=0, source_ip=None, 
         if domain and domain.strip()
     }
 
+    query_threshold=max(config.DNS_QUERY_RATE_THRESHOLD,4*baseline_query_rate) if baseline_query_rate is not None else config.DNS_QUERY_RATE_THRESHOLD
     if (
-        len(queries) >= config.DNS_QUERY_RATE_THRESHOLD
+        len(queries) >= query_threshold
         and len(unique_domains) >= 20
     ):
         anomalies.append(
@@ -137,6 +142,10 @@ def check_dns_anomaly(dns_queries_or_traffic, failed_queries=0, source_ip=None, 
             "severity": "MEDIUM",
             "source_ip": source_ip,
             "anomaly_count": len(anomalies),
+            "query_count":len(queries),
+            "distinct_domains":len(unique_domains),
+            "query_threshold":query_threshold,
+            "baseline_query_rate":baseline_query_rate,
             "reasons": anomalies,
             "message": f"DNS Anomaly detected: {'; '.join(anomalies[:2])}"
         }

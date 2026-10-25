@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Threat Detection</h2>
+<p>Recorded detection evidence, risk explanations and response history. Capture visibility limits apply; simulation is kept on the Viva Lab page.</p>
+{% include 'security_panel.html' %}
+{% include 'incident_review_panel.html' %}
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/security-pipeline.js"></script>
+<script src="/static/js/incident-review.js"></script>
+{% endblock %}

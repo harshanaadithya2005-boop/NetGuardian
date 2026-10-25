@@ -60,19 +60,57 @@
 {% endif %}
 
 
+        {% if protection_mode == 'DEMO' and not (router_enforcement.has_ownership and router_enforcement.state != 'RELEASED') %}
         {% if device.status == 'quarantined' %}
-        <span class="badge badge-danger badge-lg"><i class="fa-solid fa-ban"></i> QUARANTINED</span>
+        <span class="badge badge-danger badge-lg"><i class="fa-solid fa-ban"></i> QUARANTINED (DEMO)</span>
         <button class="btn btn-success" onclick="toggleQuarantine({{ device.id }}, 'release')">
-            <i class="fa-solid fa-unlock"></i> Release from Isolation
+            <i class="fa-solid fa-unlock"></i> Release DEMO Quarantine
         </button>
         {% else %}
-        <span class="badge badge-success badge-lg"><i class="fa-solid fa-check"></i> NORMAL ACCESS</span>
+        <span class="badge badge-success badge-lg"><i class="fa-solid fa-check"></i> DEMO MARKER: CLEAR</span>
         <button class="btn btn-danger" onclick="toggleQuarantine({{ device.id }}, 'quarantine')">
-            <i class="fa-solid fa-lock"></i> Quarantine Device
+            <i class="fa-solid fa-lock"></i> Mark Quarantined (DEMO)
         </button>
+        {% endif %}
         {% endif %}
     </div>
 </div>
+
+<section class="card mt-20" id="router-enforcement" data-device-id="{{ device.id }}" data-device-mac="{{ device.mac_address or '' }}">
+    <h3>LIVE router enforcement</h3>
+    <p><strong id="router-enforcement-state">{{ router_enforcement.state }}</strong> · Separate from any DEMO marker above.</p>
+    <p id="router-enforcement-message">{{ router_enforcement.message }}</p>
+    <p id="router-verification">{% if router_enforcement.verified_at %}Last verified: {{ router_enforcement.verified_at }}{% else %}No router enforcement verified.{% endif %}</p>
+    <p>ACTIVE means deny-list entries in the selected SSID scope were read back successfully. Client disconnection is shown separately; a rule alone does not prove immediate Wi-Fi disconnection.</p>
+    <fieldset><legend>SSID filter scope for a new quarantine</legend>
+        {% for i in range(4) %}<label><input type="checkbox" name="router-ssid" value="{{ i }}" {% if i == 0 %}checked{% endif %}>SSID index {{ i }}</label> {% endfor %}
+    </fieldset>
+    <label><input type="checkbox" id="router-allow-enable">I explicitly approve enabling deny-list filtering on selected currently disabled, empty lists. Existing whitelist modes will be refused.</label>
+    <p>Select only the intended SSID records. Record 0 (router Wi-Fi) was verified in the controlled test; other scopes require their own review. Other rules and Wi-Fi settings are preserved.</p>
+    <details id="router-identity-details">
+        <summary>Verify current Wi-Fi identity (private/randomized MAC)</summary>
+        <p>On the selected phone, open Settings → Connections → Wi-Fi → the gear beside its connected network. Read its current Wi-Fi MAC address and IP address there, then enter them below. Do not copy another device's address or rely on the hostname.</p>
+        <p>A fixed private address for this network can be verified. If the address rotates on reconnect, select <strong>Phone MAC</strong> on the phone, reconnect, run discovery and open the newly discovered device record before continuing.</p>
+        <form id="router-identity-form">
+            <p><label>MAC read from this device <input name="mac" required maxlength="17" autocomplete="off" pattern="[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}" placeholder="Read from the selected device"></label></p>
+            <p><label>IP read from this device <input name="ip" required maxlength="15" autocomplete="off" placeholder="Read from its Wi-Fi details"></label></p>
+            <p><label><input type="checkbox" name="stable_mac_confirmed" required> I independently checked this device's Wi-Fi settings; this MAC stays fixed for the selected network.</label></p>
+            <p><label><input type="checkbox" name="non_management" required> This is not the NetGuardian desktop, router or another management device.</label></p>
+            <button type="submit" class="btn btn-outline" id="router-identity-submit" disabled>Verify identity (read-only router check)</button>
+        </form>
+        <p id="router-identity-status" role="status">Verification is scoped to this device, MAC, IP, SSID and administrator session for up to 15 minutes. A restart or changed identity requires verification again. No router settings are changed.</p>
+    </details>
+    <div class="action-buttons">
+        <button type="button" class="btn btn-danger" id="router-plan-block">Quarantine (LIVE): prepare plan</button>
+        <button type="button" class="btn btn-success" id="router-plan-release">Release (LIVE, available in DEMO)</button>
+        <button type="button" class="btn btn-outline" id="router-reconcile">Reconcile (read-only)</button>
+        <button type="button" class="btn btn-outline" id="router-plan-recover">Prepare Recovery</button>
+        <a class="btn btn-outline" href="/api/device/{{ device.id }}/router-quarantine/recovery">Download recovery/audit snapshot (administrator)</a>
+    </div>
+    <p id="router-action-status" role="status"></p>
+    <pre id="router-plan-preview" style="white-space:pre-wrap; overflow-wrap:anywhere;">No live change prepared.</pre>
+    <button type="button" class="btn btn-danger" id="router-execute" disabled>Confirm planned router change</button>
+</section>
 
 <div class="dashboard-grid">
     <!-- Risk & Drift Summary -->
@@ -92,11 +130,11 @@
                 <h4>Overall Risk Assessment</h4>
                 <p>
                     {% if device.risk_score >= 70 %}
-                    Critical security anomalies detected. Automatic network quarantine is enforced.
+                    High risk requires administrator review. Automatic quarantine is disabled; check the separate verified router enforcement status.
                     {% elif device.risk_score >= 40 %}
                     Suspicious behaviour detected. Flagged on dashboard for administrator review.
                     {% else %}
-                    Device metrics are consistent with historical baseline profile.
+                    No high risk indicators are currently recorded. Capture coverage and baseline quality affect this assessment.
                     {% endif %}
                 </p>
                 <div class="drift-stat">
@@ -113,7 +151,7 @@
     <div class="card">
         <div class="panel-header">
             <h3><i class="fa-solid fa-scale-balanced"></i> Behavioural Baseline Comparison</h3>
-            <span class="badge badge-info">Proposal Section 8.2</span>
+            <span class="badge badge-info">5 minute outbound window</span>
         </div>
         <table class="data-table">
             <thead>
@@ -137,7 +175,7 @@
                     </td>
                 </tr>
                 <tr>
-                    <td><strong>Distinct External IPs</strong></td>
+                    <td><strong>Distinct Destination IPs</strong></td>
                     <td>{{ drift.breakdown.distinct_ips.normal|int }}</td>
                     <td>{{ drift.breakdown.distinct_ips.observed|int }}</td>
                     <td>
@@ -158,7 +196,7 @@
                 </tr>
                 <tr>
                     <td><strong>Data Volume (MB)</strong></td>
-                    <td>{{ drift.breakdown.bandwidth_mb.normal }} MB</td>
+                    <td>{{ drift.breakdown.bandwidth_mb.normal|round(4) }} MB</td>
                     <td>{{ drift.breakdown.bandwidth_mb.observed }} MB</td>
                     <td>
                         <span class="badge {{ 'badge-danger' if drift.breakdown.bandwidth_mb.drift_pct > 200 else ('badge-warning' if drift.breakdown.bandwidth_mb.drift_pct > 50 else 'badge-success') }}">
@@ -176,6 +214,20 @@
     </div>
 </div>
 
+<section class="card mt-20">
+    <h3>Device management</h3>
+    <p>Baseline: {{ drift.baseline_source or drift.status }} · {{ drift.message }}</p>
+    <form onsubmit="event.preventDefault(); renameDevice({{ device.id }}, this.elements.device_name.value);">
+        <label>Device name <input name="device_name" maxlength="100" required value="{{ device.device_name or '' }}"></label>
+        <button class="btn btn-outline" type="submit">Save name</button>
+    </form>
+    <h3>Quarantine audit history</h3>
+    <p>DEMO quarantine changes the management marker only. It does not isolate a device from the network.</p>
+    <table class="data-table"><thead><tr><th>Time</th><th>Action</th><th>Actor</th><th>Reason</th></tr></thead><tbody>
+    {% for entry in quarantine_logs %}<tr><td>{{ entry.timestamp }}</td><td>{{ entry.action }}</td><td>{{ entry.performed_by }}</td><td>{{ entry.reason }}</td></tr>
+    {% else %}<tr><td colspan="4">No quarantine actions recorded.</td></tr>{% endfor %}
+    </tbody></table>
+</section>
 <!-- Device Traffic History -->
 <div class="card mt-20">
     <div class="panel-header">

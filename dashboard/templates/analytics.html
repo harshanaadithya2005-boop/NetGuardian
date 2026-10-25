@@ -38,14 +38,17 @@
     <canvas id="deviceRiskChart"></canvas>
 </div>
 
+</div>
 <!-- Chart.js Library -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 
+<script src="/static/js/chart-fallback.js"></script>
 <script>
 document.addEventListener("DOMContentLoaded", function () {
 
+  const charts = [];
   // 1. Daily Traffic Usage
-  new Chart(document.getElementById("trafficChart"), {
+  charts.push(new Chart(document.getElementById("trafficChart"), {
     type: "line",
     data: {
       labels: {{ traffic_labels|tojson }},
@@ -68,10 +71,10 @@ document.addEventListener("DOMContentLoaded", function () {
         }
       }
     }
-  });
+  }));
 
   // 2. Protocol Usage
-  new Chart(document.getElementById("protoChart"), {
+  charts.push(new Chart(document.getElementById("protoChart"), {
     type: "doughnut",
     data: {
       labels: {{ proto_labels|tojson }},
@@ -95,10 +98,10 @@ document.addEventListener("DOMContentLoaded", function () {
         }
       }
     }
-  });
+  }));
 
   // 3. Historical Alert Severity Distribution
-  new Chart(document.getElementById("riskChart"), {
+  charts.push(new Chart(document.getElementById("riskChart"), {
     type: "bar",
     data: {
       labels: ["Low", "Medium", "High", "Critical"],
@@ -125,10 +128,10 @@ document.addEventListener("DOMContentLoaded", function () {
         }
       }
     }
-  });
+  }));
 
   // 4. Current Device Risk Levels
-  new Chart(document.getElementById("deviceRiskChart"), {
+  charts.push(new Chart(document.getElementById("deviceRiskChart"), {
     type: "bar",
     data: {
       labels: ["Low", "Medium", "High"],
@@ -162,8 +165,24 @@ options: {
         }
     }
 }
-  });
+  }));
 
+  async function refreshAnalytics() {
+    if (document.hidden) return;
+    try {
+      const response = await fetch("/api/analytics", {cache: "no-store"});
+      if (!response.ok) throw new Error("Analytics unavailable");
+      const data = await response.json();
+      const labels = [data.traffic_labels, data.proto_labels, ["Low","Medium","High","Critical"], ["Low","Medium","High"]];
+      const values = [data.traffic_values, data.proto_values, data.risk_values, data.device_risk_values];
+      charts.forEach((chart, i) => {
+        chart.data.labels = labels[i];
+        chart.data.datasets[0].data = values[i];
+        chart.update();
+      });
+    } catch (error) { console.error(error); }
+  }
+  setInterval(refreshAnalytics, 5000);
 });
 </script>
 

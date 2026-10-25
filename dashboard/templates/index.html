@@ -21,7 +21,7 @@
         <div class="stat-icon icon-quarantined"><i class="fa-solid fa-ban"></i></div>
         <div class="stat-info">
             <span class="stat-value text-danger" id="stat-quarantined-devices">{{ stats.quarantined_devices }}</span>
-            <span class="stat-title">Quarantined Hosts</span>
+            <span class="stat-title">DEMO Quarantine Markers</span>
         </div>
     </div>
     <div class="card stat-card">
@@ -67,54 +67,11 @@
     <p>
         {% if protection_mode == "DEMO" %}
         Threat detection and risk scoring are active.
-        Quarantine is simulated without changing Windows Firewall rules.
+        New quarantine actions use DEMO markers. Existing LIVE router rules still require an explicit Release; check each device's verified status.
         {% else %}
-        Live protection is configured. Firewall enforcement may be active.
+        Router quarantine is manual. Check each device's verified LIVE enforcement status; DEMO markers do not indicate blocking.
         {% endif %}
     </p>
-</section>
-
-<!-- Simulation Control Center -->
-<section class="card simulation-panel">
-    <div class="panel-header">
-        <div>
-            <h3><i class="fa-solid fa-flask-vial"></i> Attack Simulation & Demonstration Lab</h3>
-            <p class="panel-subtitle">Run isolated fictional attack scenarios. Results appear below and do not change real devices, alerts, or traffic records.</p>
-        </div>
-        <button class="btn btn-sm btn-outline-danger" onclick="triggerSimulation('reset')">
-            <i class="fa-solid fa-rotate-left"></i> Reset Simulation
-        </button>
-    </div>
-    <div class="simulation-buttons">
-        <button class="btn btn-sim" onclick="triggerSimulation('port_scan')">
-            <i class="fa-solid fa-crosshairs"></i> Simulate Port Scan (+30 Risk)
-        </button>
-        <button class="btn btn-sim" onclick="triggerSimulation('dns_anomaly')">
-            <i class="fa-solid fa-globe"></i> Simulate DNS Anomaly (+20 Risk)
-        </button>
-        <button class="btn btn-sim" onclick="triggerSimulation('traffic_spike')">
-            <i class="fa-solid fa-chart-line-up"></i> Simulate Traffic Spike (+15 Risk)
-        </button>
-        <button class="btn btn-sim" onclick="triggerSimulation('rogue_device')">
-            <i class="fa-solid fa-user-secret"></i> Inject Rogue Device (+20 Risk)
-        </button>
-        <button class="btn btn-sim btn-danger-glow" onclick="triggerSimulation('critical_attack')">
-            <i class="fa-solid fa-skull-crossbones"></i> Full Attack (Simulated Quarantine)
-        </button>
-    </div>
-    <div class="simulation-results" aria-live="polite">
-        <div class="simulation-results-header">
-            <strong>Simulation Results &amp; History</strong>
-            <span class="simulation-demo-label">ISOLATED DEMO</span>
-        </div>
-        <p id="simulation-feedback" class="simulation-feedback">Run a scenario to see its result here.</p>
-        <div class="simulation-table-wrap">
-            <table class="simulation-history-table">
-                <thead><tr><th>Time</th><th>Scenario</th><th>Risk</th><th>Severity</th><th>Would quarantine?</th></tr></thead>
-                <tbody id="simulation-history-body"><tr><td colspan="5">No simulation events yet.</td></tr></tbody>
-            </table>
-        </div>
-    </div>
 </section>
 
 <div class="dashboard-grid">
@@ -154,7 +111,7 @@
 
 {% if dev.status == 'quarantined' %}
 <span class="badge badge-danger">
-    <i class="fa-solid fa-ban"></i> Quarantined
+    <i class="fa-solid fa-ban"></i> Quarantined (DEMO)
 </span>
 {% elif dev.status == 'online' %}
 <span class="badge badge-success">
@@ -165,6 +122,7 @@
     <i class="fa-solid fa-circle-minus"></i> Offline
 </span>
 {% endif %}
+<small>LIVE: {{ dev.router_enforcement.state }}{% if dev.router_enforcement.verification_stale %} (stale){% endif %}</small>
 
                         </td>
                         <td>
@@ -187,13 +145,13 @@
                         <td>
                             <div class="action-buttons">
                                 <a href="/device/{{ dev.id }}" class="btn btn-sm btn-outline"><i class="fa-solid fa-chart-pie"></i> Profile</a>
-                                {% if dev.status == 'quarantined' %}
+                                {% if (dev.router_enforcement.has_ownership and dev.router_enforcement.state != 'RELEASED') or dev.status == 'quarantined' %}
                                 <button class="btn btn-sm btn-success" onclick="toggleQuarantine({{ dev.id }}, 'release')">
-                                    <i class="fa-solid fa-unlock"></i> Release
+                                    <i class="fa-solid fa-unlock"></i> {{ "Release LIVE / Review" if (protection_mode == "LIVE" or (dev.router_enforcement.has_ownership and dev.router_enforcement.state != "RELEASED")) else "Release DEMO" }}
                                 </button>
                                 {% else %}
                                 <button class="btn btn-sm btn-danger" onclick="toggleQuarantine({{ dev.id }}, 'quarantine')">
-                                    <i class="fa-solid fa-lock"></i> Isolate
+                                    <i class="fa-solid fa-lock"></i> {{ "Review LIVE Quarantine" if protection_mode == "LIVE" else "Quarantine (DEMO)" }}
                                 </button>
                                 {% endif %}
                             </div>
@@ -286,4 +244,325 @@
         </table>
     </div>
 </section>
+
+
+<!-- NetGuardian Live Device Table -->
+<script>
+(function () {
+    const REFRESH_INTERVAL = 5000;
+    let refreshing = false;
+
+    function escapeHTML(value) {
+        return String(value ?? "").replace(
+            /[&<>"']/g,
+            character => ({
+                "&": "&amp;",
+                "<": "&lt;",
+                ">": "&gt;",
+                '"': "&quot;",
+                "'": "&#39;"
+            }[character])
+        );
+    }
+
+    function deviceName(device) {
+        const savedName = String(device.device_name || "").trim();
+
+        if (
+            savedName &&
+            !/^Device-\d+$/i.test(savedName)
+        ) {
+            return savedName;
+        }
+
+        return device.hostname ||
+               savedName ||
+               "Unknown Device";
+    }
+
+    function statusBadge(status) {
+        if (status === "quarantined") {
+            return `<span class="badge badge-danger">
+                <i class="fa-solid fa-ban"></i> Quarantined (DEMO)
+            </span>`;
+        }
+
+        if (status === "online") {
+            return `<span class="badge badge-success">
+                <i class="fa-solid fa-check"></i> Online
+            </span>`;
+        }
+
+        return `<span class="badge badge-secondary">
+            <i class="fa-solid fa-circle-minus"></i> Offline
+        </span>`;
+    }
+
+    function riskDisplay(value) {
+        const risk = Math.max(
+            0,
+            Math.min(100, Number(value) || 0)
+        );
+
+        const level = risk >= 70
+            ? "high"
+            : risk >= 40
+                ? "medium"
+                : "low";
+
+        const color = risk >= 70
+            ? "text-danger"
+            : risk >= 40
+                ? "text-warning"
+                : "text-success";
+
+        return `
+            <div class="risk-bar-container">
+                <div class="risk-bar risk-${level}"
+                     style="width: ${Math.max(risk, 10)}%;">
+                </div>
+            </div>
+            <span class="risk-number ${color}">
+                ${risk}/100
+            </span>
+        `;
+    }
+
+    function renderDevice(device) {
+        const id = Number(device.id);
+
+        if (!Number.isSafeInteger(id) || id <= 0) {
+            return "";
+        }
+
+        const trusted =
+            device.trusted === true ||
+            device.trusted === 1 ||
+            device.trusted === "1";
+
+        const liveManaged = device.router_enforcement?.has_ownership && device.router_enforcement.state !== "RELEASED";
+        const isQuarantined = liveManaged || device.status === "quarantined";
+
+        const name = escapeHTML(deviceName(device));
+        const hostname = escapeHTML(
+            device.hostname || "No DNS PTR"
+        );
+
+        const ip = escapeHTML(device.ip_address || "-");
+        const mac = escapeHTML(device.mac_address || "N/A");
+        const type = escapeHTML(device.device_type || "General");
+
+        const trustButton = `
+            <button class="btn btn-sm ${trusted ? "btn-trusted" : "btn-untrusted"}"
+                    onclick="toggleTrust(${id}, ${trusted ? 0 : 1})">
+                <i class="fa-solid ${trusted ? "fa-shield-check" : "fa-shield-xmark"}"></i>
+                ${trusted ? "Trusted" : "Untrusted"}
+            </button>
+        `;
+
+        const quarantineButton = isQuarantined
+            ? `<button class="btn btn-sm btn-success"
+                       onclick="toggleQuarantine(${id}, 'release')">
+                   <i class="fa-solid fa-unlock"></i> ${liveManaged || document.body.dataset.protectionMode === "LIVE" ? "Release LIVE / Review" : "Release DEMO"}
+               </button>`
+            : `<button class="btn btn-sm btn-danger"
+                       onclick="toggleQuarantine(${id}, 'quarantine')">
+                   <i class="fa-solid fa-lock"></i> {{ "Review LIVE Quarantine" if protection_mode == "LIVE" else "Quarantine (DEMO)" }}
+               </button>`;
+
+        return `
+            <tr id="dev-row-${id}"
+                class="${isQuarantined ? "row-quarantined" : ""}">
+                <td>
+                    <a href="/device/${id}" class="device-link">
+                        <strong>${name}</strong>
+                    </a>
+                    <div class="subtext">${hostname}</div>
+                </td>
+                <td><code>${ip}</code></td>
+                <td><small>${mac}</small></td>
+                <td><span class="device-tag">${type}</span></td>
+                <td>${statusBadge(device.status)}<br><small>LIVE: ${escapeHTML(device.router_enforcement?.state || "NOT_REQUESTED")}${device.router_enforcement?.verification_stale ? " (stale)" : ""}</small></td>
+                <td>${riskDisplay(device.risk_score)}</td>
+                <td>${trustButton}</td>
+                <td>
+                    <div class="action-buttons">
+                        <a href="/device/${id}"
+                           class="btn btn-sm btn-outline">
+                            <i class="fa-solid fa-chart-pie"></i>
+                            Profile
+                        </a>
+                        ${quarantineButton}
+                    </div>
+                </td>
+            </tr>
+        `;
+    }
+
+    async function refreshDeviceTable() {
+        if (refreshing || document.hidden) {
+            return;
+        }
+
+        const tableBody =
+            document.getElementById("devices-table-body");
+
+        if (!tableBody) {
+            return;
+        }
+
+        refreshing = true;
+
+        try {
+            const response = await fetch("/api/devices", {
+                cache: "no-store"
+            });
+
+            if (!response.ok) {
+                throw new Error(
+                    `Device API error: ${response.status}`
+                );
+            }
+
+            const devices = await response.json();
+
+            if (!Array.isArray(devices)) {
+                throw new Error("Invalid device response");
+            }
+
+            devices.sort((a, b) => {
+                const aOnline = a.status === "online" ? 0 : 1;
+                const bOnline = b.status === "online" ? 0 : 1;
+
+                return aOnline - bOnline ||
+                    String(a.ip_address || "").localeCompare(
+                        String(b.ip_address || ""),
+                        undefined,
+                        { numeric: true }
+                    );
+            });
+
+            tableBody.innerHTML = devices.length
+                ? devices.map(renderDevice).join("")
+                : `<tr>
+                       <td colspan="8">
+                           No verified local devices found.
+                       </td>
+                   </tr>`;
+
+            const counter = document.getElementById(
+                "dashboard-device-counter"
+            );
+
+            if (counter) {
+                counter.textContent =
+                    `${devices.length} Identified`;
+            }
+
+        } catch (error) {
+            console.error(
+                "[NetGuardian] Device refresh failed:",
+                error
+            );
+
+        } finally {
+            refreshing = false;
+        }
+    }
+
+    refreshDeviceTable();
+
+    setInterval(
+        refreshDeviceTable,
+        REFRESH_INTERVAL
+    );
+
+    document.addEventListener(
+        "visibilitychange",
+        function () {
+            if (!document.hidden) {
+                refreshDeviceTable();
+            }
+        }
+    );
+})();
+</script>
+
+
+<!-- NetGuardian Live Dashboard Statistics -->
+<script>
+(function () {
+    const STATS_REFRESH_INTERVAL = 5000;
+
+    const statsElements = {
+        total_devices: "stat-total-devices",
+        online_devices: "stat-online-devices",
+        quarantined_devices: "stat-quarantined-devices",
+        open_alerts: "stat-open-alerts",
+        high_risk_devices: "stat-high-risk"
+    };
+
+    let updating = false;
+
+    async function refreshDashboardStats() {
+        if (updating || document.hidden) {
+            return;
+        }
+
+        updating = true;
+
+        try {
+            const response = await fetch("/api/stats", {
+                cache: "no-store"
+            });
+
+            if (!response.ok) {
+                throw new Error(
+                    `Statistics API error: ${response.status}`
+                );
+            }
+
+            const stats = await response.json();
+
+            for (const [field, elementId] of Object.entries(statsElements)) {
+                const element = document.getElementById(elementId);
+
+                if (element && Number.isFinite(Number(stats[field]))) {
+                    element.textContent = stats[field];
+                }
+            }
+
+        } catch (error) {
+            console.error(
+                "[NetGuardian] Statistics refresh failed:",
+                error
+            );
+
+            // Keep the last confirmed values instead
+            // of displaying misleading zeros.
+
+        } finally {
+            updating = false;
+        }
+    }
+
+    refreshDashboardStats();
+
+    setInterval(
+        refreshDashboardStats,
+        STATS_REFRESH_INTERVAL
+    );
+
+    document.addEventListener(
+        "visibilitychange",
+        function () {
+            if (!document.hidden) {
+                refreshDashboardStats();
+            }
+        }
+    );
+})();
+</script>
+
+
 {% endblock %}

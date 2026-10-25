@@ -7,35 +7,55 @@
     <link rel="stylesheet" href="/static/css/style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
-<body>
+<body data-protection-mode="{{ protection_mode }}">
     <header class="navbar">
         <div class="nav-brand">
             <i class="fa-solid fa-shield-halved brand-icon"></i>
             <div class="brand-text">
                 <span class="brand-title">NetGuardian</span>
-                <span class="brand-subtitle">Behavioural Fingerprinting & Auto-Quarantine</span>
+                <span class="brand-subtitle">Behavioural Fingerprinting & Manual Quarantine</span>
             </div>
         </div>
 
         <!-- Member 3: Dashboard Navigation -->
 <nav class="member3-navigation"
      aria-label="Main navigation"
-     style="display: flex; align-items: center; gap: 30px; flex-wrap: wrap;">
+     style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
             <a href="/">Dashboard</a>
             <a href="/devices">Devices</a>
             <a href="/alerts">Alerts</a>
             <a href="/analytics">Analytics</a>
             <a href="/reports">Reports</a>
+            <a href="/threat-detection">Threat Detection</a>
+            <a href="/viva-lab">Viva Lab</a>
         </nav>
 
         <div class="nav-status">
             <span class="pulse-indicator"></span>
-            <span class="status-label">Engine: Active Monitoring</span>
+            <span id="engine-status" class="status-label">Capture: checking…</span>
             <button class="btn btn-outline" onclick="triggerDiscovery()"><i class="fa-solid fa-radar"></i> Scan Network</button>
         </div>
     </header>
 
     <main class="container">
+        <p class="badge badge-info">{{ protection_mode }} protection · Automatic quarantine disabled · {% if protection_mode == 'DEMO' %}Demo markers do not block Wi-Fi{% else %}Router enforcement requires manual administrator confirmation{% endif %}</p>
+        <details class="card" id="router-admin-panel">
+            <summary>Router quarantine administrator</summary>
+            <p id="router-admin-status">Checking administrator session...</p>
+            <p id="router-admin-feedback" role="status"></p>
+            <form id="router-admin-login">
+                <label>NetGuardian administrator password <input type="password" name="password" autocomplete="current-password" maxlength="256" required></label>
+                <button type="submit" class="btn btn-outline">Sign in</button>
+                <button type="button" class="btn btn-outline" id="router-admin-logout">Sign out</button>
+            </form>
+            <div class="action-buttons">
+                <button type="button" class="btn btn-danger" id="mode-live" disabled>Enable manual LIVE mode</button>
+                <button type="button" class="btn btn-outline" id="mode-demo" disabled>Return to DEMO mode</button>
+            </div>
+            <p id="mode-outstanding" role="status"></p>
+            <p>Mode changes make no router writes. DEMO prevents new LIVE blocks; existing router blocks require Release. LIVE release and recovery remain available in DEMO. Each application restart starts in DEMO.</p>
+            <p>Router credentials stay on the server. Signing in does not authorize a router configuration change.</p>
+        </details>
         {% block content %}{% endblock %}
     </main>
 
@@ -44,7 +64,16 @@
     </footer>
 
     <div id="toast" class="toast hidden"></div>
+    <dialog id="router-confirm-dialog" aria-labelledby="router-confirm-title">
+        <h3 id="router-confirm-title">Confirm administrator action</h3>
+        <pre id="router-confirm-description"></pre>
+        <form method="dialog" class="action-buttons">
+            <button type="submit" value="cancel" class="btn btn-outline" autofocus>Cancel</button>
+            <button type="submit" value="approve" class="btn btn-danger">Approve exact action</button>
+        </form>
+    </dialog>
     <script src="/static/js/dashboard.js"></script>
+    <script src="/static/js/router-controls.js"></script>
     {% block scripts %}{% endblock %}
 </body>
 </html>

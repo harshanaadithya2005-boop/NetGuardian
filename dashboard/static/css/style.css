@@ -57,7 +57,13 @@ a:hover {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
 }
+.member3-navigation { flex: 1 1 440px; justify-content: center; }
+.member3-navigation a { white-space: nowrap; }
+.nav-status { flex-shrink: 0; white-space: nowrap; }
+.dashboard-grid > .card { min-width: 0; }
 .nav-brand {
     display: flex;
     align-items: center;
@@ -520,3 +526,10 @@ code {
 .simulation-history-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .simulation-history-table th, .simulation-history-table td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--border-color); }
 .simulation-history-table th { color: var(--text-secondary); font-weight: 600; white-space: nowrap; }
+
+/* A locked router write must also look unavailable. */
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+/* Keep exact router changes readable inside an explicit, keyboard-accessible confirmation. */
+#router-confirm-dialog { max-width: min(760px, 92vw); max-height: 85vh; padding: 24px; border: 1px solid #64748b; border-radius: 12px; background: #152135; color: #f1f5f9; }
+#router-confirm-dialog::backdrop { background: rgba(0, 0, 0, .7); }
+#router-confirm-description { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.6; }

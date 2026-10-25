@@ -1,0 +1,33 @@
+<section class="card mt-20" id="incident-review">
+    <h3>Manual LIVE incident review and recovery checklist</h3>
+    <p>The non-target connectivity incident is unresolved. Administrator sign-in grants review access; it does not clear the persistent safety lock.</p>
+    <button type="button" class="btn btn-outline" id="incident-readonly" disabled>Run read-only router verification</button>
+    <p id="incident-status" role="status">Sign in above to review the incident.</p>
+    <div id="incident-checklist"></div>
+    <pre id="incident-evidence" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+    <ol>
+        <li>Preserve the lock, backups and existing rules. Review identity-to-XML mock results and fresh read-only router evidence.</li>
+        <li>Identify one non-management spare device with a stable, verified MAC and SSID. Reject duplicate, stale or unbound private identities.</li>
+        <li>Obtain separate approval for the exact scoped hardware test, recovery delta and wired-management recovery procedure. This verification button does not authorize a test.</li>
+        <li>During that approved test, verify target behavior, non-target Wi-Fi behavior, wired desktop access, exact read-back and complete release/restoration. Timed recovery is not relied upon.</li>
+        <li>Record the incident findings and successful target/non-target hardware validation, then obtain explicit incident-closure approval before any supported re-enablement change.</li>
+    </ol>
+    <details>
+        <summary>Submit verified incident closure (does not enable LIVE or run a hardware test)</summary>
+        <form id="incident-close-form">
+            <p>Use only a separately authorized post-incident hardware test. Historical test IDs, simulated responses and observations alone are rejected. The persistent marker is retained.</p>
+            <p><label>Established cause and corrective evidence<br><textarea name="root_cause" required minlength="30" maxlength="4000" rows="3" style="width:100%"></textarea></label></p>
+            <p><label>Separate hardware-test approval reference<br><input name="hardware_test_approval" required minlength="20" maxlength="1000" style="width:100%"></label></p>
+            <p><label>Verified hardware block operation ID <input name="block_operation_id" required></label></p>
+            <p><label>Verified hardware release operation ID <input name="release_operation_id" required></label></p>
+            <p><label>Observed non-target device IDs (comma separated) <input name="non_target_device_ids" required pattern="[0-9]+(\s*,\s*[0-9]+)*"></label></p>
+            <p><label><input type="checkbox" name="target_denied" required> The intended target alone could not reconnect during the block.</label></p>
+            <p><label><input type="checkbox" name="non_targets_unaffected" required> Identified non-target devices stayed connected throughout.</label></p>
+            <p><label><input type="checkbox" name="wired_management_unaffected" required> The wired desktop retained router and NetGuardian access throughout.</label></p>
+            <p><label><input type="checkbox" name="target_reconnected_after_release" required> The target reconnected and internet worked after release.</label></p>
+            <p><label><input type="checkbox" name="original_settings_restored" required> Full settings restoration was verified.</label></p>
+            <button type="submit" class="btn btn-outline" id="incident-close" disabled>Review and approve incident closure</button>
+        </form>
+    </details>
+    <p>Closure requires authenticated approval, post-incident captured router XML, verified block/release audit records and fresh read-only identity/restoration checks. Hardware observations are administrator attestations. No physical test runs from this page. After closure, explicitly enable manual LIVE for each application runtime. Automatic physical quarantine remains disabled.</p>
+</section>

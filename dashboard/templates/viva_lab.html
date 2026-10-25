@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Viva Lab</h2>
+<p>Isolated demonstrations. Simulated quarantine never means a real Wi-Fi block.</p>
+{% include 'offline_replay_panel.html' %}
+{% include 'attack_simulation_panel.html' %}
+{% endblock %}
+{% block scripts %}<script src="/static/js/security-pipeline.js"></script>{% endblock %}

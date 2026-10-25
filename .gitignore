@@ -1,21 +1,78 @@
+# Python environments and caches
 .venv/
+venv/
 __pycache__/
-*.pyc
-*.db
-.env
-.vscode/
-*.db.backup
-/Project NetGuardian/
-# Duplicate local project copy
-/Project NetGuardian/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Temporary source-code backups
+# Local credentials, environment files and signing material
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pk8
+*.p12
+*.pfx
+*.jks
+*.keystore
+credentials*.json
+secrets/
+
+# Production SQLite data, journals and every local database backup
+*.db
+*.db-*
+*.db.*
+*.sqlite
+*.sqlite-*
+*.sqlite.*
+*.sqlite3
+*.sqlite3-*
+*.sqlite3.*
+database/backups/
+backups/
 *.backup
+*.bak
 *.before_safe_fix
 
-# Python cache
-__pycache__/
-*.pyc
+# Local capture data, logs, incident decisions and temporary test/build output
+.test-work/
+*.log
+*.pcap
+*.pcapng
+*.cap
+*.lock
+*.tmp
+*.temp
+router/LIVE_WRITES_DISABLED*
+router/incident-lock-archive/
+router/wifi_identity_bindings/
+tools/phone-dns-test/dist/
+deferred/
 
-# Local virtual environment
-.venv/
+# Device-bound hardware tests and one-off production investigations stay local.
+# Reusable mocked regression coverage is kept in tests/.
+/tools/controlled_a05s_test.py
+/tools/prepare_router_test.py
+/tools/read_a05s_recovery_state.py
+/tests/test_controlled_a05s_test.py
+/test_real_*.py
+/test_huawei_*.py
+/test_router_*.py
+/test_production_history_insert.py
+/test_corrected_attribution.py
+/test_historical_attribution.py
+/test_traffic_direction_audit.py
+/test_backfill_eligibility.py
+/test_dashboard_apis.py
+/migrate_device_ips.py
+/setup_behaviour_history.py
+/fix_scapy_worker.py
+
+# Editors, duplicate checkout and malformed local shell output
+.vscode/
+.idea/
+/Project NetGuardian/
+/pc;*

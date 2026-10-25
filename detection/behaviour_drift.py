@@ -49,7 +49,7 @@ def calculate_behaviour_drift(current_metrics, baseline_profile):
     base_dns = float(baseline_profile.get("normal_dns_rate", 40))
     base_ips = float(baseline_profile.get("normal_dest_ips", 12))
     base_ports_str = str(baseline_profile.get("normal_ports", "80,443,53"))
-    base_ports = float(len([p for p in base_ports_str.split(",") if p.strip()])) or 3.0
+    base_ports = float(baseline_profile.get("normal_port_count", len([p for p in base_ports_str.split(",") if p.strip()]))) or 3.0
     base_mb = float(baseline_profile.get("normal_bandwidth", 50.0))
 
     # Observed metrics
@@ -104,65 +104,75 @@ def calculate_behaviour_drift(current_metrics, baseline_profile):
 
 
 def check_behaviour_drift_for_device(device_id, recent_traffic=None):
+    """Compare all outbound real traffic in five minutes with matching baselines.
+
+    recent_traffic is retained for callers using the earlier API. Aggregation
+    deliberately uses SQL so a busy device cannot hide behind a 100-row limit.
     """
-    Fetches device baseline and traffic history, then computes live behaviour drift and spikes.
-    """
-    try:
-        from database.models import get_device_profile, get_recent_traffic
+    from datetime import datetime, timedelta
+    from database.models import get_device_profile, get_device_by_id
+    from analytics.behaviour_windows import get_device_window_metrics
+    from analytics.learned_baseline import get_learned_baseline
+    device = get_device_by_id(device_id)
+    if not device:
+        return {"detected": False, "drift_score": 0.0, "traffic_spike": False,
+                "status": "DEVICE_NOT_FOUND", "message": "Device not found"}
+    end = datetime.now()
+    metrics = get_device_window_metrics(device_id, minutes=5, end_time=end)
+    profile, windows = get_learned_baseline(device_id, device.get("mac_address"), end-timedelta(minutes=5))
+    source = "LEARNED"
+    if profile is not None:
+        from analytics.collection_schedule import get_safe_completed_window_end
+        end=get_safe_completed_window_end(now=end)
+        metrics=get_device_window_metrics(device_id,minutes=5,end_time=end)
+        quality=observation_quality(device_id,end)
+        if not quality['eligible']:
+            return dict(detected=False,drift_score=0.0,traffic_spike=False,status='INCOMPLETE_OBSERVATION',
+                        baseline_source=source,baseline_windows=windows,metrics=metrics,quality=quality,
+                        message='Completed behavioral window rejected: '+quality['status'])
+    if profile is None:
         profile = get_device_profile(device_id)
+        source = "CONFIGURED"
         if not profile:
-            return {
-                "detected": False,
-                "drift_score": 0.0,
-                "traffic_spike": False,
-                "message": "No baseline profile available yet"
-            }
+            return {"detected": False, "drift_score": 0.0, "traffic_spike": False,
+                    "status": "NO_BASELINE", "message": "No baseline profile available yet"}
+        # Configured volume/rate budgets are per day. Use the same five-minute
+        # interval as the observation, with floors for sparse IoT activity.
+        profile = dict(profile)
+        profile["normal_bandwidth"] = max(0.05, float(profile["normal_bandwidth"])/288)
+        profile["normal_dns_rate"] = max(5, float(profile["normal_dns_rate"])/288)
+    if metrics["packet_count"] < 20:
+        return {"detected": False, "drift_score": 0.0, "traffic_spike": False,
+                "status": "INSUFFICIENT_OBSERVATION", "baseline_source": source,
+                "baseline_windows": windows, "metrics": metrics,
+                "message": "At least 20 outbound packets in five minutes are required"}
+    score, breakdown = calculate_behaviour_drift(metrics, profile)
+    spike = breakdown["bandwidth_mb"]["traffic_spike"]
+    # Daily factory budgets are not learned evidence. Keep their comparison
+    # visible during warmup, but do not turn it into a behavioral alert that
+    # would prevent clean observations from ever qualifying for learning.
+    provisional = source != "LEARNED"
+    detected = not provisional and (score >= 50 or spike)
+    return {"detected": detected, "drift_score": score, "traffic_spike": spike,
+            "status": "BASELINE_WARMUP" if provisional else "EVALUATED",
+            "provisional": provisional, "baseline_source": source, "baseline_windows": windows,
+            "window_minutes": 5, "metrics": metrics, "breakdown": breakdown,
+            "message": (f"Baseline warming up: {windows}/12 qualified windows; comparison is provisional"
+                        if provisional else "Behavior anomaly detected" if detected else "Behavior within baseline limits")}
 
-        traffic = recent_traffic if recent_traffic is not None else get_recent_traffic(limit=100, device_id=device_id)
 
-        # Compute observed metrics from traffic
-        dns_queries = [t.get("dns_query") for t in traffic if t.get("dns_query")]
-        dest_ips = set(t.get("destination_ip") for t in traffic if t.get("destination_ip"))
-        dest_ports = set(t.get("destination_port") for t in traffic if t.get("destination_port"))
-        total_bytes = sum(t.get("packet_size", 0) for t in traffic)
-        total_mb = round(total_bytes / (1024 * 1024), 2)
-
-        observed = {
-            "dns_requests": len(dns_queries),
-            "distinct_ips": len(dest_ips),
-            "distinct_ports": len(dest_ports),
-            "data_mb": total_mb
-        }
-
-        drift_score, breakdown = calculate_behaviour_drift(observed, profile)
-        is_spike = breakdown["bandwidth_mb"]["traffic_spike"]
-
-        has_drift_anomaly = drift_score >= 50.0
-
-        return {
-            "detected": has_drift_anomaly or is_spike,
-            "drift_score": drift_score,
-            "traffic_spike": is_spike,
-            "risk_weight": (
-                (config.RISK_WEIGHTS.get("behaviour_drift", 15) if has_drift_anomaly else 0) +
-                (config.RISK_WEIGHTS.get("traffic_spike", 15) if is_spike else 0)
-            ),
-            "severity": "HIGH" if drift_score >= 75.0 else ("MEDIUM" if drift_score >= 40.0 else "LOW"),
-            "breakdown": breakdown,
-            "message": (
-                f"Significant Behaviour Drift ({drift_score}%) detected"
-                if has_drift_anomaly
-                else ("Traffic Volume Spike detected" if is_spike else "Behaviour within normal parameters")
-            )
-        }
-    except Exception as e:
-        return {
-            "detected": False,
-            "drift_score": 0.0,
-            "traffic_spike": False,
-            "risk_weight": 0,
-            "error": str(e)
-        }
+def observation_quality(device_id,end):
+    from database.db import get_connection
+    from analytics.window_eligibility import assess_window_eligibility
+    from analytics.capture_heartbeat import assess_heartbeat_window
+    from analytics.capture_sessions_v2 import assess_session_transitions_v2
+    conn=get_connection()
+    try:
+        quality=assess_window_eligibility(conn,device_id,end)
+        if not assess_heartbeat_window(conn,end)['heartbeat_candidate'] or not assess_session_transitions_v2(conn,end)['transition_free']:
+            return dict(eligible=False,status='CAPTURE_COVERAGE_OR_SESSION_REVIEW')
+        return quality
+    finally:conn.close()
 
 
 if __name__ == "__main__":

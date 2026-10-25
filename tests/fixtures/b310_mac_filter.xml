@@ -1,0 +1,100 @@
+<response>
+<Ssids>
+<Ssid>
+<Index>0</Index>
+<WifiMacFilterStatus>0</WifiMacFilterStatus>
+<WifiMacFilterMac0 />
+<wifihostname0 />
+<WifiMacFilterMac1 />
+<wifihostname1 />
+<WifiMacFilterMac2 />
+<wifihostname2 />
+<WifiMacFilterMac3 />
+<wifihostname3 />
+<WifiMacFilterMac4 />
+<wifihostname4 />
+<WifiMacFilterMac5 />
+<wifihostname5 />
+<WifiMacFilterMac6 />
+<wifihostname6 />
+<WifiMacFilterMac7 />
+<wifihostname7 />
+<WifiMacFilterMac8 />
+<wifihostname8 />
+<WifiMacFilterMac9 />
+<wifihostname9 />
+</Ssid>
+<Ssid>
+<Index>1</Index>
+<WifiMacFilterStatus>0</WifiMacFilterStatus>
+<WifiMacFilterMac0 />
+<wifihostname0 />
+<WifiMacFilterMac1 />
+<wifihostname1 />
+<WifiMacFilterMac2 />
+<wifihostname2 />
+<WifiMacFilterMac3 />
+<wifihostname3 />
+<WifiMacFilterMac4 />
+<wifihostname4 />
+<WifiMacFilterMac5 />
+<wifihostname5 />
+<WifiMacFilterMac6 />
+<wifihostname6 />
+<WifiMacFilterMac7 />
+<wifihostname7 />
+<WifiMacFilterMac8 />
+<wifihostname8 />
+<WifiMacFilterMac9 />
+<wifihostname9 />
+</Ssid>
+<Ssid>
+<Index>2</Index>
+<WifiMacFilterStatus>0</WifiMacFilterStatus>
+<WifiMacFilterMac0 />
+<wifihostname0 />
+<WifiMacFilterMac1 />
+<wifihostname1 />
+<WifiMacFilterMac2 />
+<wifihostname2 />
+<WifiMacFilterMac3 />
+<wifihostname3 />
+<WifiMacFilterMac4 />
+<wifihostname4 />
+<WifiMacFilterMac5 />
+<wifihostname5 />
+<WifiMacFilterMac6 />
+<wifihostname6 />
+<WifiMacFilterMac7 />
+<wifihostname7 />
+<WifiMacFilterMac8 />
+<wifihostname8 />
+<WifiMacFilterMac9 />
+<wifihostname9 />
+</Ssid>
+<Ssid>
+<Index>3</Index>
+<WifiMacFilterStatus>0</WifiMacFilterStatus>
+<WifiMacFilterMac0 />
+<wifihostname0 />
+<WifiMacFilterMac1 />
+<wifihostname1 />
+<WifiMacFilterMac2 />
+<wifihostname2 />
+<WifiMacFilterMac3 />
+<wifihostname3 />
+<WifiMacFilterMac4 />
+<wifihostname4 />
+<WifiMacFilterMac5 />
+<wifihostname5 />
+<WifiMacFilterMac6 />
+<wifihostname6 />
+<WifiMacFilterMac7 />
+<wifihostname7 />
+<WifiMacFilterMac8 />
+<wifihostname8 />
+<WifiMacFilterMac9 />
+<wifihostname9 />
+</Ssid>
+</Ssids>
+</response>

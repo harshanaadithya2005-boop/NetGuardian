@@ -12,7 +12,9 @@ PLACEHOLDER_MACS = {
     "",
     "UNKNOWN",
     "AUTO-CAPTURED",
-    "LOCAL-HOST"
+    "LOCAL-HOST",
+    "00:00:00:00:00:00",
+    "FF:FF:FF:FF:FF:FF"
 }
 
 
@@ -40,6 +42,7 @@ def is_local_device_ip(ip_address):
 # DEVICE DISCOVERY AND IDENTITY MANAGEMENT
 # ==========================================================
 
+
 def add_or_update_device(
     ip_address,
     mac_address,
@@ -49,13 +52,10 @@ def add_or_update_device(
     timestamp=None
 ):
     """
-    Add or update a discovered device.
+    Save a discovered device using its verified MAC identity.
 
-    - Prefer verified MAC identities.
-    - Preserve existing trusted settings and device IDs.
-    - Do not merge two different MAC identities sharing an IP.
-    - Record MAC/IP identity conflicts for investigation.
-    - Do not overwrite verified MACs with placeholders.
+    Safely handle DHCP IP reassignment while preserving device IDs,
+    trust settings, quarantine status and historical records.
     """
 
     if timestamp is None:
@@ -69,41 +69,61 @@ def add_or_update_device(
         if not is_placeholder_mac(mac_address)
         else None
     )
-
     valid_mac = normalized_mac is not None
 
     connection = get_connection()
 
     try:
+        # Keep lookup and reassignment in one write transaction.
+        connection.execute("BEGIN IMMEDIATE")
         cursor = connection.cursor()
 
-        # 1. Find device by verified MAC address.
         existing_device = None
 
+        # Find a previously registered verified MAC identity.
         if valid_mac:
             existing_device = cursor.execute("""
                 SELECT id, status, mac_address
                 FROM devices
-                WHERE LOWER(mac_address) = LOWER(?)
+                WHERE UPPER(mac_address) = ?
+                ORDER BY id
+                LIMIT 1
             """, (normalized_mac,)).fetchone()
 
-        # 2. Find existing owner of the requested IP.
+        # Find the record currently occupying this IP address.
         ip_owner = cursor.execute("""
             SELECT id, status, mac_address
             FROM devices
             WHERE ip_address = ?
         """, (ip_address,)).fetchone()
 
-        # 3. Detect different verified MACs on the same IP.
-        if ip_owner is not None and valid_mac:
+        # Handle IP ownership conflicts.
+        if ip_owner is not None:
             owner_mac = ip_owner["mac_address"]
-
-            if (
+            owner_has_verified_mac = (
                 not is_placeholder_mac(owner_mac)
+            )
+
+            # A placeholder observation must never take ownership
+            # away from a verified device identity.
+            if not valid_mac and owner_has_verified_mac:
+                print(
+                    "[DeviceDiscovery] Unverified MAC observation "
+                    f"ignored for {ip_address}. "
+                    "Verified device identity preserved."
+                )
+                connection.rollback()
+                return None
+
+            # Two different verified MACs observed at one IP.
+            if (
+                valid_mac
+                and owner_has_verified_mac
                 and str(owner_mac).strip().upper() != normalized_mac
             ):
                 cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS device_identity_conflicts (
+                    CREATE TABLE IF NOT EXISTS
+                    device_identity_conflicts (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         ip_address TEXT NOT NULL,
                         existing_device_id INTEGER,
@@ -152,44 +172,60 @@ def add_or_update_device(
                 connection.commit()
 
                 print(
-                    "[DeviceDiscovery] Identity conflict recorded: "
+                    "[DeviceDiscovery] Verified MAC conflict: "
                     f"IP {ip_address}, "
                     f"existing MAC {owner_mac}, "
-                    f"observed MAC {normalized_mac}"
+                    f"observed MAC {normalized_mac}. "
+                    "No device identities changed."
                 )
-
-                # Stop before updating or inserting another device.
                 return None
 
-        # 4. Reuse the IP owner only if no MAC identity matched.
+            # A verified observation may replace stale IP ownership
+            # belonging to a placeholder-MAC record.
+            if (
+                valid_mac
+                and not owner_has_verified_mac
+            ):
+                # If the verified MAC already owns this record,
+                # there is nothing to release.
+                same_identity = (
+                    existing_device is not None
+                    and existing_device["id"] == ip_owner["id"]
+                )
+
+                if not same_identity:
+                    # Preserve the historical row and foreign keys.
+                    # NULL releases the unique IP assignment.
+                    cursor.execute("""
+                        UPDATE devices
+                        SET
+                            ip_address = NULL,
+                            status = CASE
+                                WHEN status = 'quarantined'
+                                THEN status
+                                ELSE 'offline'
+                            END
+                        WHERE id = ?
+                    """, (ip_owner["id"],))
+
+                    print(
+                        "[DeviceDiscovery] Released stale IP "
+                        f"{ip_address} from placeholder device "
+                        f"{ip_owner['id']}."
+                    )
+
+                    ip_owner = None
+
+        # Use the verified MAC record if one exists.
         if existing_device is None and ip_owner is not None:
             existing_device = ip_owner
 
-        # 5. Update an existing device.
         if existing_device is not None:
             device_id = existing_device["id"]
 
-            ip_conflict = (
-                ip_owner is not None
-                and ip_owner["id"] != device_id
-            )
-
-            if ip_conflict:
-                print(
-                    "[DeviceDiscovery] IP conflict: "
-                    f"{ip_address} belongs to device "
-                    f"{ip_owner['id']}, while the observed MAC "
-                    f"matches device {device_id}. "
-                    "Existing identities preserved."
-                )
-
-                return None
-
-            current_status = existing_device["status"]
-
             new_status = (
                 "quarantined"
-                if current_status == "quarantined"
+                if existing_device["status"] == "quarantined"
                 else "online"
             )
 
@@ -201,7 +237,8 @@ def add_or_update_device(
                     hostname = COALESCE(?, hostname),
                     device_type = COALESCE(?, device_type),
                     last_seen = ?,
-                    status = ?
+                    status = ?,
+                    missed_scans = 0
                 WHERE id = ?
             """, (
                 ip_address,
@@ -213,20 +250,23 @@ def add_or_update_device(
                 device_id
             ))
 
-        # 6. Insert a genuinely new device.
         else:
             inferred_name = (
                 device_name
                 or (
                     hostname
-                    if hostname and hostname != "Unknown"
+                    if hostname
+                    and hostname.strip().lower() != "unknown"
                     else f"Device-{ip_address.split('.')[-1]}"
                 )
             )
 
             inferred_type = (
                 device_type
-                or infer_device_type(inferred_name, normalized_mac)
+                or infer_device_type(
+                    inferred_name,
+                    normalized_mac
+                )
             )
 
             cursor.execute("""
@@ -240,9 +280,10 @@ def add_or_update_device(
                     last_seen,
                     status,
                     trusted,
-                    risk_score
+                    risk_score,
+                    missed_scans
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'online', 0, 20)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'online', 0, 20, 0)
             """, (
                 ip_address,
                 normalized_mac,
@@ -261,7 +302,52 @@ def add_or_update_device(
                 cursor
             )
 
+
+            # Create one first-discovery security alert.
+            #
+            # Only newly inserted devices with verified MAC
+            # identities on our monitored local network qualify.
+            #
+            # This runs inside the existing transaction so the
+            # device registration and alert are committed together.
+
+            if valid_mac and is_local_device_ip(ip_address):
+                cursor.execute("""
+                    INSERT INTO alerts (
+                        device_id,
+                        alert_type,
+                        risk_score,
+                        severity,
+                        description,
+                        status,
+                        timestamp
+                    )
+                    VALUES (?, ?, ?, ?, ?, 'open', ?)
+                """, (
+                    device_id,
+                    "unknown_device",
+                    20,
+                    "MEDIUM",
+                    (
+                        "New network device discovered: "
+                        f"{ip_address} "
+                        f"(MAC: {normalized_mac}). "
+                        "Administrator approval required."
+                    ),
+                    timestamp
+                ))
+
+                print(
+                    "[DeviceDiscovery] NEW DEVICE ALERT: "
+                    f"Device ID {device_id} | "
+                    f"IP {ip_address} | "
+                    f"MAC {normalized_mac}",
+                    flush=True
+                )
+
+
         connection.commit()
+
         return device_id
 
     except Exception:
@@ -272,11 +358,12 @@ def add_or_update_device(
         connection.close()
 
 
+
 # ==========================================================
 # DEVICE ONLINE / OFFLINE TRACKING
 # ==========================================================
 
-def mark_missing_devices_offline(discovered_ips):
+def mark_missing_devices_offline(discovered_ips, excluded_macs=None):
     """
     Mark devices offline after three consecutive missed scans.
 
@@ -310,15 +397,39 @@ def mark_missing_devices_offline(discovered_ips):
 
         detected_ips = set(discovered_ips)
 
+
+        # Devices monitored by the Huawei router must not
+        # have their presence status changed by Scapy.
+        excluded_macs = {
+            str(mac).strip().upper()
+            for mac in (excluded_macs or [])
+            if mac
+        }
+
+
+
         stored_devices = cursor.execute("""
-            SELECT id, ip_address, status, missed_scans
+            SELECT id, ip_address, mac_address,
+                   status, missed_scans
             FROM devices
         """).fetchall()
+
 
         for device in stored_devices:
             device_id = device["id"]
             ip_address = device["ip_address"]
             status = device["status"]
+
+
+            mac_address = str(
+                device["mac_address"] or ""
+            ).strip().upper()
+
+            # Huawei controls the Online/Offline status
+            # of these Wi-Fi devices.
+            if mac_address in excluded_macs:
+                continue
+
 
             try:
                 device_ip = ipaddress.ip_address(ip_address)
@@ -648,6 +759,119 @@ def log_traffic(
         conn.close()
 
 
+def get_recent_tcp_syn_traffic(
+    device_id,
+    minutes=5,
+    limit=5000
+):
+    """
+    Retrieve initial TCP SYN packets for a device.
+
+    Used specifically for port-scan detection.
+    Excludes SYN-ACK, ACK, and established TCP traffic.
+    """
+
+    if minutes <= 0:
+        raise ValueError("minutes must be greater than zero")
+
+    if limit <= 0:
+        raise ValueError("limit must be greater than zero")
+
+    cutoff = (
+        datetime.now() - timedelta(minutes=minutes)
+    ).isoformat(timespec="seconds")
+
+    conn = get_connection()
+
+    try:
+        rows = conn.execute("""
+            SELECT
+                t.id,
+                t.device_id,
+                t.source_ip,
+                t.destination_ip,
+                t.protocol,
+                t.destination_port,
+                t.tcp_flags,
+                t.timestamp
+            FROM traffic t
+            WHERE t.device_id = ?
+              AND t.protocol = 'TCP'
+              AND t.tcp_flags = 'S'
+              AND datetime(t.timestamp) >= datetime(?)
+              AND datetime(t.timestamp) <= datetime('now','localtime')
+              AND COALESCE(t.is_simulated, 0) = 0
+            ORDER BY t.id DESC
+            LIMIT ?
+        """, (
+            device_id,
+            cutoff,
+            limit
+        )).fetchall()
+
+        return [dict(row) for row in rows]
+
+    finally:
+        conn.close()
+
+
+def get_recent_dns_queries(
+    device_id,
+    minutes=1,
+    limit=5000
+):
+    """
+    Retrieve conventional DNS query packets.
+
+    Only port 53 queries are included.
+    DNS responses and mDNS traffic are excluded.
+    """
+
+    if minutes <= 0:
+        raise ValueError("minutes must be greater than zero")
+
+    if limit <= 0:
+        raise ValueError("limit must be greater than zero")
+
+    cutoff = (
+        datetime.now() - timedelta(minutes=minutes)
+    ).isoformat(timespec="seconds")
+
+    conn = get_connection()
+
+    try:
+        rows = conn.execute("""
+            SELECT
+                t.id,
+                t.device_id,
+                t.source_ip,
+                t.destination_ip,
+                t.destination_port,
+                t.protocol,
+                t.dns_query,
+                t.timestamp
+            FROM traffic t
+            WHERE t.device_id = ?
+              AND t.destination_port = 53
+              AND t.dns_query IS NOT NULL
+              AND TRIM(t.dns_query) != ''
+              AND datetime(t.timestamp) >= datetime(?)
+              AND datetime(t.timestamp) <= datetime('now','localtime')
+              AND COALESCE(t.is_simulated, 0) = 0
+            ORDER BY t.id DESC
+            LIMIT ?
+        """, (
+            device_id,
+            cutoff,
+            limit
+        )).fetchall()
+
+        return [dict(row) for row in rows]
+
+    finally:
+        conn.close()
+
+
 def get_recent_traffic(
     limit=50,
     device_id=None,
@@ -684,7 +908,7 @@ def get_recent_traffic(
                 datetime.now() - timedelta(minutes=minutes)
             ).isoformat(timespec="seconds")
 
-            query += " AND t.timestamp >= ?"
+            query += " AND datetime(t.timestamp) >= datetime(?) AND datetime(t.timestamp) <= datetime('now','localtime')"
             params.append(cutoff)
 
         query += " ORDER BY t.id DESC LIMIT ?"
@@ -707,7 +931,8 @@ def create_alert(
     risk_score,
     severity,
     description,
-    timestamp=None
+    timestamp=None,
+    refresh_open=False
 ):
     """Create an alert unless an identical open alert already exists."""
 
@@ -717,6 +942,7 @@ def create_alert(
     conn = get_connection()
 
     try:
+        conn.execute("BEGIN IMMEDIATE")
         cur = conn.cursor()
 
         existing = cur.execute("""
@@ -729,6 +955,8 @@ def create_alert(
 
         if existing:
             alert_id = existing["id"]
+            if refresh_open:
+                cur.execute('UPDATE alerts SET risk_score=?,severity=?,description=? WHERE id=? AND status=\'open\'',(risk_score,severity,description,alert_id))
         else:
             cur.execute("""
                 INSERT INTO alerts (
@@ -908,15 +1136,28 @@ def get_network_stats():
     conn = get_connection()
 
     try:
+
         all_devices = conn.execute("""
-            SELECT ip_address, status, risk_score
+            SELECT ip_address, mac_address,
+                   status, risk_score
             FROM devices
         """).fetchall()
+
+
+        invalid_macs = {
+            "",
+            "AUTO-CAPTURED",
+            "UNKNOWN",
+            "00:00:00:00:00:00",
+        }
 
         local_devices = [
             device
             for device in all_devices
             if is_local_device_ip(device["ip_address"])
+            and str(
+                device["mac_address"] or ""
+            ).strip().upper() not in invalid_macs
         ]
 
         total_devices = len(local_devices)

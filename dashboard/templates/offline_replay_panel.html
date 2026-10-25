@@ -1,0 +1,14 @@
+<section class="card mt-20" id="viva-lab">
+    <h3>Offline packet replay — isolated viva lab</h3>
+    <p>Synthetic Scapy packets pass through the capture callback and real detector/risk code in a separate SQLite database. No packets are transmitted and no router configuration changes are possible. These are not live network attacks.</p>
+    <div class="action-buttons">
+        <button class="btn btn-outline" data-viva-scenario="normal" data-security-admin disabled>Replay normal packet</button>
+        <button class="btn btn-outline" data-viva-scenario="port_scan" data-security-admin disabled>Replay SYN scan</button>
+        <button class="btn btn-outline" data-viva-scenario="dns_burst" data-security-admin disabled>Replay DNS burst</button>
+        <button class="btn btn-danger" data-viva-scenario="combined" data-security-admin disabled>Replay combined incident</button>
+        <button class="btn btn-success" id="viva-release" data-security-admin disabled>Release simulated quarantine</button>
+        <button class="btn btn-outline" id="viva-reset" data-security-admin disabled>Reset isolated replay</button>
+    </div>
+    <p id="viva-result" role="status">No replay loaded. Sign in above to run the isolated lab.</p>
+    <div id="viva-evidence"></div>
+</section>

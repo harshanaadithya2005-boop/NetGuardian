@@ -63,27 +63,27 @@ def _fallback(alert_type):
 def _ask_ollama(prompt):
     body = json.dumps({"model": OLLAMA_MODEL, "prompt": prompt, "stream": False}).encode()
     req = urllib.request.Request(OLLAMA_URL, data=body, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with urllib.request.urlopen(req, timeout=5) as resp:
         return json.loads(resp.read())["response"].strip()
 
 
 def explain_alert(alert_type, severity, risk_score, description, device_ip):
-    """Return (summary, recommendation, source)."""
-    prompt = (
-        "You are a network security assistant. Explain this alert to a non-expert.\n"
-        f"Alert: {alert_type}\nDevice IP: {device_ip}\nSeverity: {severity}\n"
-        f"Risk score: {risk_score}/100\nDetails: {description}\n\n"
-        "Reply in exactly this format:\n"
-        "SUMMARY: <one or two sentences>\n"
-        "RECOMMENDATION: <one or two sentences>"
-    )
-    try:
-        text = _ask_ollama(prompt)
-        summary, recommendation = text, ""
-        if "RECOMMENDATION:" in text:
-            summary, recommendation = text.split("RECOMMENDATION:", 1)
-        summary = summary.replace("SUMMARY:", "").strip()
-        return summary, recommendation.strip(), "Ollama"
-    except Exception:
-        summary, recommendation = _fallback(alert_type)
-        return summary, recommendation, "Built-in"
+    """Deterministic evidence-grounded explanation; optional model is not required.
+
+    Unverified model prose never replaces recorded facts or authorizes response.
+    """
+    _,recommendation=_fallback(alert_type)
+    evidence=str(description or 'No packet-level details were recorded for this alert.')
+    summary=f"Recorded {alert_type} alert for {device_ip}: {evidence} Risk at alert creation: {risk_score}/100 ({severity}). This is an indicator requiring review, not proof of compromise."
+    return summary,recommendation,'Built-in'
+
+
+def explain_detection(detection):
+    evidence=detection['evidence']
+    if detection['type']=='unknown_device':
+        return f"Device {detection['device_id']} ({detection['ip_address']}): {detection['message']} Inventory trust indicator (+{detection['risk_contribution']}); this does not imply observed attack traffic or authorize quarantine."
+    return (f"Device {detection['device_id']} ({detection['ip_address']}): "
+            f"{detection['message']} Recorded {evidence['packet_count']} packet records "
+            f"between {evidence['window_start']} and {evidence['window_end']}. "
+            f"Risk contribution +{detection['risk_contribution']}; confidence {detection['confidence']:.0%}. "
+            f"Source: {detection['source']}.")

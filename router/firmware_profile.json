@@ -1,0 +1,47 @@
+{
+  "device": "B310s-925",
+  "hardware": "WL1B310CM01",
+  "firmware": "21.333.01.02.297",
+  "webui": "17.100.09.00.03",
+  "read_only_verified": true,
+  "configuration_write_tested": true,
+  "initial_mode": "DISABLED on indices 0,1,2,3",
+  "slots_per_ssid": 10,
+  "filter_endpoint": "/api/wlan/multi-macfilter-settings",
+  "mode_values": {
+    "disabled": "0",
+    "whitelist": "1",
+    "denylist": "2"
+  },
+  "webui_contract_evidence": {
+    "url": "http://192.168.8.1/js/wlanmacfilter.js",
+    "sha256": "e9cce963997701fa4698dfab119e1cd363480c7b42c9902cd2a093cc3c470713",
+    "functions": [
+      "getSSIDStatus",
+      "initPage",
+      "postData"
+    ]
+  },
+  "restrictions": [
+    "Further live writes require separate authorization; global DEMO/write-disabled settings remain in place",
+    "No whitelist conversion",
+    "No Wi-Fi restart or deauthentication endpoint is verified",
+    "No atomic compare-and-set API exposed by WebUI",
+    "Legacy macfilterimmediatework read flag is 0; effect on existing associations unverified"
+  ],
+  "verified_test": {
+    "date": "2026-10-25",
+    "ssid": "router Wi-Fi",
+    "ssid_index": "0",
+    "fields": [
+      "WifiMacFilterStatus",
+      "WifiMacFilterMac0"
+    ],
+    "reassociation_denied_user_confirmed": true,
+    "release_and_internet_restoration_user_confirmed": true,
+    "original_filter_configuration_restored": true,
+    "wired_management_access_preserved": true,
+    "router_normalizes_mac_case": "lowercase",
+    "timed_recovery_without_operator_intervention_live_verified": false
+  }
+}

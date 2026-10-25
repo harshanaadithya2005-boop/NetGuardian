@@ -1,4 +1,3 @@
-from flask import url_for
 
 import os
 import sys
@@ -7,18 +6,11 @@ import csv
 import io
 import time
 import ipaddress
+import logging
+
 from pathlib import Path
 from datetime import datetime
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import (
-    SimpleDocTemplate,
-    Paragraph,
-    Spacer,
-    Table,
-    TableStyle
-)
+
 # Ensure project root is in sys.path
 BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR) not in sys.path:
@@ -29,16 +21,46 @@ venv_python = BASE_DIR / ".venv" / "Scripts" / "python.exe"
 if not venv_python.exists():
     venv_python = BASE_DIR / ".venv" / "bin" / "python"
 
-if venv_python.exists() and Path(sys.executable).resolve() != venv_python.resolve():
+if (
+    venv_python.exists()
+    and Path(sys.executable).resolve() != venv_python.resolve()
+):
     try:
-        import flask
+        import flask, scapy, requests, dotenv, reportlab
     except ImportError:
         import subprocess
-        proc = subprocess.run([str(venv_python), str(BASE_DIR / "app.py")] + sys.argv[1:])
+        proc = subprocess.run(
+            [str(venv_python), str(BASE_DIR / "app.py")] + sys.argv[1:]
+        )
         sys.exit(proc.returncode)
 
-from flask import Flask, render_template, request, jsonify, redirect, Response
-from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from router.huawei_client import HuaweiRouterClient
+from router.router_sync import sync_connected_wifi_devices
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle
+)
+
+
+from flask import url_for
+from flask import (
+    Flask,
+    render_template,
+    request,
+    jsonify,
+    redirect,
+    Response
+)
 from database.db import get_connection
 from ai.ai_engine import explain_alert
 
@@ -54,28 +76,193 @@ from database.models import (
     resolve_alert
 )
 from discovery.device_discovery import discover_devices, seed_demo_devices
-from risk.risk_engine import evaluate_device_risk, evaluate_all_devices, get_risk_level
+from risk.risk_engine import (
+    evaluate_device_risk,
+    evaluate_all_devices,
+    get_risk_level
+)
 from detection.behaviour_drift import check_behaviour_drift_for_device
 from response.quarantine import quarantine_device, release_device
+from response.router_quarantine import get_state as get_router_enforcement
+from router import manual_mode
 from capture.packet_capture import start_capture
 import simulation.simulate_traffic as sim
 
-# Initialize Flask application with proper templates and static directories
+
+# ---------------------------------------------------------
+# Flask Application
+# ---------------------------------------------------------
+
 app = Flask(
     __name__,
     template_folder=str(BASE_DIR / "dashboard" / "templates"),
     static_folder=str(BASE_DIR / "dashboard" / "static")
 )
+
 app.secret_key = config.SECRET_KEY
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Strict", MAX_CONTENT_LENGTH=16384)
+from router.control_api import controls
+app.register_blueprint(controls)
+from detection.security_api import security
+app.register_blueprint(security)
+
+
+@app.after_request
+def local_dashboard_headers(response):
+    response.headers['X-Frame-Options']='DENY'
+    response.headers['Referrer-Policy']='same-origin'
+    return response
+
+
+@app.before_request
+def protect_local_actions():
+    """Reject cross-origin browser writes to the local control dashboard."""
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        from urllib.parse import urlsplit
+        origin = request.headers.get("Origin")
+        if request.headers.get("Sec-Fetch-Site") == "cross-site" or (
+            origin and urlsplit(origin).netloc != request.host
+        ):
+            return jsonify(status="error", message="Cross-origin actions are not allowed."), 403
+
+
+@app.context_processor
+def safety_context():
+    return {"protection_mode": manual_mode.get_mode(), "auto_quarantine": False}
+
+
+@app.route("/api/health")
+def api_health():
+    from capture.packet_capture import get_capture_health, SCAPY_AVAILABLE
+    from monitoring.engine import state
+    return jsonify(protection_mode=manual_mode.get_mode(), auto_quarantine=False,
+                   capture=get_capture_health(), scapy_available=SCAPY_AVAILABLE,
+                   analytics=dict(state), target_network=config.TARGET_NETWORK)
+
+
+@app.get('/threat-detection')
+def threat_detection_page():
+    return render_template('threat_detection.html')
+
+
+@app.get('/viva-lab')
+def viva_lab_page():
+    return render_template('viva_lab.html')
+
+
+@app.route("/api/analytics")
+def api_analytics():
+    conn = get_connection()
+    try:
+        # Real traffic only; no row limits or duplicate statistics-table counts.
+        days = [dict(r) for r in conn.execute("""
+            SELECT DATE(timestamp) AS day, SUM(packet_size) AS total_bytes
+            FROM traffic WHERE COALESCE(is_simulated,0)=0
+            GROUP BY DATE(timestamp) ORDER BY day DESC LIMIT 30
+        """)][::-1]
+        protocols = [dict(r) for r in conn.execute("""
+            SELECT protocol, COUNT(*) AS total FROM traffic
+            WHERE COALESCE(is_simulated,0)=0 GROUP BY protocol ORDER BY total DESC
+        """)]
+        severity = {r[0]: r[1] for r in conn.execute(
+            "SELECT UPPER(severity), COUNT(*) FROM alerts GROUP BY UPPER(severity)")}
+        risk = {"LOW": 0, "MEDIUM": 0, "HIGH": 0}
+        for dev in get_verified_local_devices():
+            risk[get_risk_level(dev["risk_score"] or 0)] += 1
+        return jsonify(traffic_labels=[r["day"] for r in days], traffic_values=[r["total_bytes"] for r in days],
+                       proto_labels=[r["protocol"] for r in protocols], proto_values=[r["total"] for r in protocols],
+                       risk_values=[severity.get(s,0) for s in ("LOW","MEDIUM","HIGH","CRITICAL")],
+                       device_risk_values=list(risk.values()))
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------
+# Flask HTTP Access Log Filtering
+# ---------------------------------------------------------
+
+class DashboardPollingFilter(logging.Filter):
+    """
+    Hide successful routine dashboard API polling logs.
+
+    Preserve:
+    - HTTP errors
+    - Non-dashboard requests
+    - NetGuardian monitoring messages
+    """
+
+    QUIET_ENDPOINTS = (
+        "/api/stats",
+        "/api/devices",
+        "/api/alerts",
+        "/api/traffic"
+    )
+
+    def filter(self, record):
+        message = record.getMessage()
+
+        if (
+            '"GET /api/' in message
+            and '" 200 ' in message
+            and any(
+                f"GET {endpoint} " in message
+                for endpoint in self.QUIET_ENDPOINTS
+            )
+        ):
+            return False
+
+        return True
+
+
+werkzeug_logger = logging.getLogger("werkzeug")
+werkzeug_logger.addFilter(DashboardPollingFilter())
+
+
+
+# ---------------------------------------------------------
+# Local Network Filtering
+# ---------------------------------------------------------
 
 def is_local_ip(ip_address):
     """Check whether an IP address belongs to the configured local network."""
     try:
-        network = ipaddress.ip_network(config.TARGET_NETWORK, strict=False)
+        network = ipaddress.ip_network(
+            config.TARGET_NETWORK,
+            strict=False
+        )
         return ipaddress.ip_address(ip_address) in network
     except (ValueError, TypeError):
         return False
 
+
+# Historical/placeholder records remain untouched in SQLite.
+INVALID_DEVICE_MACS = frozenset({
+    "",
+    "AUTO-CAPTURED",
+    "UNKNOWN",
+    "00:00:00:00:00:00"
+})
+
+
+def get_verified_local_devices():
+    """Return local devices with a real recorded MAC identity."""
+    devices = [
+        device
+        for device in get_all_devices()
+        if is_local_ip(device.get("ip_address"))
+        and str(
+            device.get("mac_address") or ""
+        ).strip().upper() not in INVALID_DEVICE_MACS
+    ]
+
+    for device in devices:
+        device["router_enforcement"] = get_router_enforcement(device["id"])
+    return devices
+
+
+# ---------------------------------------------------------
+# AI Alert Explanation
+# ---------------------------------------------------------
 
 @app.route("/alerts/<int:alert_id>/explain")
 def explain(alert_id):
@@ -99,7 +286,7 @@ def explain(alert_id):
 
         existing = conn.execute(
             """
-            SELECT summary, recommendation
+            SELECT summary, recommendation, evidence_signature
             FROM ai_reports
             WHERE alert_id = ?
             ORDER BY id DESC
@@ -108,7 +295,9 @@ def explain(alert_id):
             (alert_id,)
         ).fetchone()
 
-        if existing:
+        import hashlib
+        evidence_signature=hashlib.sha256(str((alert['alert_type'],alert['severity'],alert['risk_score'],alert['description'],alert['ip_address'])).encode()).hexdigest()
+        if existing and existing['evidence_signature']==evidence_signature:
             summary = existing["summary"]
             recommendation = existing["recommendation"]
             source = "Saved"
@@ -124,14 +313,14 @@ def explain(alert_id):
             conn.execute(
                 """
                 INSERT INTO ai_reports
-                (alert_id, summary, recommendation, created_at)
-                VALUES (?, ?, ?, ?)
+                (alert_id, summary, recommendation, created_at, evidence_signature)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     alert_id,
                     summary,
                     recommendation,
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),evidence_signature
                 )
             )
 
@@ -155,8 +344,11 @@ def explain(alert_id):
 
 @app.route("/devices")
 def devices_page():
-    devices = get_all_devices()
-    return render_template("devices.html", devices=devices)
+    """Current local device inventory, including genuinely offline hosts."""
+    return render_template(
+        "devices.html",
+        devices=get_verified_local_devices()
+    )
 
 
 @app.route("/alerts")
@@ -165,30 +357,35 @@ def alerts_page():
     conn = get_connection()
 
     try:
-        alerts = conn.execute("""
+        alerts = conn.execute(
+            """
             SELECT alerts.*, devices.ip_address
             FROM alerts
             LEFT JOIN devices ON alerts.device_id = devices.id
             WHERE alerts.id > ?
             ORDER BY alerts.timestamp DESC, alerts.id DESC
-        """, (reset_id,)).fetchall()
+            """,
+            (reset_id,)
+        ).fetchall()
     finally:
         conn.close()
 
     return render_template("alerts.html", alerts=alerts)
 
 
-
 @app.route("/alerts/<int:alert_id>/status", methods=["POST"])
 def update_alert_status(alert_id):
 
     allowed_statuses = {"open", "resolved", "ignored"}
-    new_status = request.form.get("status", "").strip().lower()
+    new_status = request.form.get(
+        "status", ""
+    ).strip().lower()
 
     if new_status not in allowed_statuses:
         return "Invalid alert status", 400
 
     conn = get_connection()
+
     try:
         existing = conn.execute(
             "SELECT id FROM alerts WHERE id = ?",
@@ -202,45 +399,60 @@ def update_alert_status(alert_id):
             "UPDATE alerts SET status = ? WHERE id = ?",
             (new_status, alert_id)
         )
+
         conn.commit()
+
     finally:
         conn.close()
 
     return redirect("/alerts")
 
+
 @app.route("/alerts/reset", methods=["POST"])
 def reset_alerts():
-    """Archive current alerts and hide them from the active views."""
+    """Archive current alerts and hide them from active views."""
+
     conn = get_connection()
+
     try:
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS alert_reset_state (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 last_cleared_id INTEGER NOT NULL DEFAULT 0
             )
-        """)
+            """
+        )
 
         latest_id = conn.execute(
             "SELECT COALESCE(MAX(id), 0) FROM alerts"
         ).fetchone()[0]
 
-        conn.execute("""
+        conn.execute(
+            """
             UPDATE alerts
             SET status = 'ignored'
             WHERE id <= ? AND status = 'open'
-        """, (latest_id,))
+            """,
+            (latest_id,)
+        )
 
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO alert_reset_state (id, last_cleared_id)
             VALUES (1, ?)
             ON CONFLICT(id) DO UPDATE SET
                 last_cleared_id = excluded.last_cleared_id
-        """, (latest_id,))
+            """,
+            (latest_id,)
+        )
 
         conn.commit()
+
     except Exception:
         conn.rollback()
         raise
+
     finally:
         conn.close()
 
@@ -249,186 +461,51 @@ def reset_alerts():
 
 def get_alert_reset_id():
     """Return the ID of the last alert cleared."""
+
     conn = get_connection()
+
     try:
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS alert_reset_state (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 last_cleared_id INTEGER NOT NULL DEFAULT 0
             )
-        """)
-        row = conn.execute("""
+            """
+        )
+
+        row = conn.execute(
+            """
             SELECT last_cleared_id
             FROM alert_reset_state
             WHERE id = 1
-        """).fetchone()
+            """
+        ).fetchone()
+
         return row[0] if row else 0
+
     finally:
         conn.close()
 
-@app.route("/analytics")
+
+# ---------------------------------------------------------
+# Analytics
+# ---------------------------------------------------------
+
 @app.route("/analytics")
 def analytics_page():
-    conn = get_connection()
+    return render_template("analytics.html", **api_analytics().get_json())
 
-    try:
-        # 1. Daily network traffic usage
-        traffic_rows = conn.execute("""
-            SELECT
-                DATE(timestamp) AS day,
-                SUM(packet_size) AS total_bytes
-            FROM traffic
-            GROUP BY DATE(timestamp)
-            ORDER BY day ASC
-        """).fetchall()
 
-        traffic_labels = [row["day"] for row in traffic_rows]
-        traffic_values = [row["total_bytes"] for row in traffic_rows]
-
-        # 2. Network protocol distribution
-        protocol_rows = conn.execute("""
-            SELECT
-                protocol,
-                COUNT(*) AS total
-            FROM traffic
-            GROUP BY protocol
-            ORDER BY total DESC
-        """).fetchall()
-
-        proto_labels = [row["protocol"] for row in protocol_rows]
-        proto_values = [row["total"] for row in protocol_rows]
-
-        # 3. Historical alert severity distribution
-        risk_rows = conn.execute("""
-            SELECT
-                UPPER(severity) AS severity,
-                COUNT(*) AS total
-            FROM alerts
-            GROUP BY UPPER(severity)
-        """).fetchall()
-
-        risk_counts = {
-            row["severity"]: row["total"]
-            for row in risk_rows
-        }
-
-        risk_values = [
-            risk_counts.get("LOW", 0),
-            risk_counts.get("MEDIUM", 0),
-            risk_counts.get("HIGH", 0),
-            risk_counts.get("CRITICAL", 0)
-        ]
-
-    finally:
-        conn.close()
-
-    # 4. Current risk levels of local network devices
-    local_devices = [
-        device for device in get_all_devices()
-        if is_local_ip(device.get("ip_address"))
-    ]
-
-    device_risk_counts = {
-        "LOW": 0,
-        "MEDIUM": 0,
-        "HIGH": 0
-    }
-
-    for device in local_devices:
-        score = int(device.get("risk_score") or 0)
-        level = get_risk_level(score)
-        device_risk_counts[level] += 1
-
-    device_risk_values = [
-        device_risk_counts["LOW"],
-        device_risk_counts["MEDIUM"],
-        device_risk_counts["HIGH"]
-    ]
-
-    return render_template(
-        "analytics.html",
-        traffic_labels=traffic_labels,
-        traffic_values=traffic_values,
-        proto_labels=proto_labels,
-        proto_values=proto_values,
-        risk_values=risk_values,
-        device_risk_values=device_risk_values
-    )
-    total_devices = conn.execute(
-        "SELECT COUNT(*) FROM devices"
-    ).fetchone()[0]
-    conn = get_connection()
-
-    try:
-        # Total registered devices
-        total_devices = conn.execute(
-            "SELECT COUNT(*) FROM devices"
-        ).fetchone()[0]
-
-        # Total security alerts
-        total_alerts = conn.execute(
-            "SELECT COUNT(*) FROM alerts"
-        ).fetchone()[0]
-
-        # Count only registered devices within our local network.
-        local_devices = [
-            device for device in get_all_devices()
-            if is_local_ip(device.get("ip_address"))
-        ]
-
-        total_devices = len(local_devices)
-
-        unknown_devices = sum(
-            1 for device in local_devices
-            if not bool(device.get("trusted", 0))
-        )
-        # Highest recorded device risk score
-        highest_risk = conn.execute(
-            "SELECT COALESCE(MAX(risk_score), 0) FROM devices"
-        ).fetchone()[0]
-
-        # Device with the most recorded traffic
-        top_device_row = conn.execute("""
-            SELECT
-                devices.ip_address,
-                COALESCE(SUM(traffic.packet_size), 0) AS total_bytes
-            FROM devices
-            JOIN traffic
-                ON devices.id = traffic.device_id
-            GROUP BY devices.id, devices.ip_address
-            ORDER BY total_bytes DESC
-            LIMIT 1
-        """).fetchone()
-
-        if top_device_row:
-            top_device = (
-                f"{top_device_row['ip_address']} "
-                f"({top_device_row['total_bytes']:,} bytes)"
-            )
-        else:
-            top_device = "No traffic recorded"
-
-    finally:
-        conn.close()
-
-    return render_template(
-        "reports.html",
-        total_devices=total_devices,
-        total_alerts=total_alerts,
-        unknown_devices=unknown_devices,
-        highest_risk=highest_risk,
-        top_device=top_device
-    )
-
+# ---------------------------------------------------------
+# Reports
+# ---------------------------------------------------------
 
 @app.route("/reports")
 def reports_page():
     """Display NetGuardian security report summary."""
 
-    local_devices = [
-        device for device in get_all_devices()
-        if is_local_ip(device.get("ip_address"))
-    ]
+    local_devices = get_verified_local_devices()
 
     total_devices = len(local_devices)
 
@@ -438,43 +515,51 @@ def reports_page():
     )
 
     highest_risk = max(
-        (int(device.get("risk_score") or 0) for device in local_devices),
+        (
+            int(device.get("risk_score") or 0)
+            for device in local_devices
+        ),
         default=0
     )
 
-    # ID of the most recently reset alert
     reset_id = get_alert_reset_id()
 
     conn = get_connection()
 
     try:
-        # All alerts ever recorded, including cleared alerts
         total_alerts = conn.execute(
             "SELECT COUNT(*) FROM alerts"
         ).fetchone()[0]
 
-        # New alerts received after the last reset
-        new_alerts = conn.execute("""
+        new_alerts = conn.execute(
+            """
             SELECT COUNT(*)
             FROM alerts
             WHERE id > ?
-        """, (reset_id,)).fetchone()[0]
+            """,
+            (reset_id,)
+        ).fetchone()[0]
 
-        # Currently open alerts received after the last reset
-        active_alerts = conn.execute("""
+        active_alerts = conn.execute(
+            """
             SELECT COUNT(*)
             FROM alerts
             WHERE id > ? AND status = ?
-        """, (reset_id, "open")).fetchone()[0]
+            """,
+            (reset_id, "open")
+        ).fetchone()[0]
 
-        # Older alerts retained for investigation
-        historical_alerts = conn.execute("""
+        historical_alerts = conn.execute(
+            """
             SELECT COUNT(*)
             FROM alerts
             WHERE id <= ?
-        """, (reset_id,)).fetchone()[0]
+            """,
+            (reset_id,)
+        ).fetchone()[0]
 
-        traffic_rows = conn.execute("""
+        traffic_rows = conn.execute(
+            """
             SELECT
                 devices.ip_address,
                 COALESCE(SUM(traffic.packet_size), 0) AS total_bytes
@@ -482,7 +567,8 @@ def reports_page():
             JOIN traffic ON devices.id = traffic.device_id
             GROUP BY devices.id, devices.ip_address
             ORDER BY total_bytes DESC
-        """).fetchall()
+            """
+        ).fetchall()
 
         top_device = "No traffic recorded"
 
@@ -510,13 +596,14 @@ def reports_page():
     )
 
 
-
 @app.route("/reports/alerts.csv")
 def export_alerts_csv():
+
     conn = get_connection()
 
     try:
-        alerts = conn.execute("""
+        alerts = conn.execute(
+            """
             SELECT
                 alerts.id,
                 devices.ip_address,
@@ -530,7 +617,9 @@ def export_alerts_csv():
             LEFT JOIN devices
                 ON alerts.device_id = devices.id
             ORDER BY alerts.timestamp DESC, alerts.id DESC
-        """).fetchall()
+            """
+        ).fetchall()
+
     finally:
         conn.close()
 
@@ -564,38 +653,47 @@ def export_alerts_csv():
         output.getvalue(),
         mimetype="text/csv",
         headers={
-            "Content-Disposition": "attachment; filename=netguardian_alerts.csv"
+            "Content-Disposition":
+                "attachment; filename=netguardian_alerts.csv"
         }
     )
 
 
 @app.route("/reports/report.pdf")
 def export_security_pdf():
-    # Create the PDF in memory without modifying the database
+    """Create a PDF security report in memory."""
+
     buffer = io.BytesIO()
 
     conn = get_connection()
+
     try:
-        local_devices = [
-            device for device in get_all_devices()
-            if is_local_ip(device.get("ip_address"))
-        ]
+        local_devices = get_verified_local_devices()
 
         total_devices = len(local_devices)
+
         total_alerts = conn.execute(
             "SELECT COUNT(*) FROM alerts"
         ).fetchone()[0]
 
         open_alerts = conn.execute(
-            "SELECT COUNT(*) FROM alerts WHERE status = 'open'"
+            """
+            SELECT COUNT(*)
+            FROM alerts
+            WHERE status = 'open'
+            """
         ).fetchone()[0]
 
         highest_risk = max(
-            (int(device.get("risk_score") or 0) for device in local_devices),
+            (
+                int(device.get("risk_score") or 0)
+                for device in local_devices
+            ),
             default=0
         )
 
-        alerts = conn.execute("""
+        alerts = conn.execute(
+            """
             SELECT
                 alerts.id,
                 devices.ip_address,
@@ -609,9 +707,9 @@ def export_security_pdf():
                 ON alerts.device_id = devices.id
             ORDER BY alerts.timestamp DESC, alerts.id DESC
             LIMIT 20
-        """).fetchall()
+            """
+        ).fetchall()
 
-        # Convert database rows into plain values before closing
         alert_rows = [
             [
                 str(a["id"]),
@@ -623,6 +721,7 @@ def export_security_pdf():
             ]
             for a in alerts
         ]
+
     finally:
         conn.close()
 
@@ -639,20 +738,32 @@ def export_security_pdf():
     elements = []
 
     elements.append(
-        Paragraph("NetGuardian - Security Report", styles["Title"])
+        Paragraph(
+            "NetGuardian - Security Report",
+            styles["Title"]
+        )
     )
 
     elements.append(Spacer(1, 12))
 
-    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    generated_at = datetime.now().strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
     elements.append(
-        Paragraph(f"Generated: {generated_at}", styles["Normal"])
+        Paragraph(
+            f"Generated: {generated_at}",
+            styles["Normal"]
+        )
     )
 
     elements.append(Spacer(1, 20))
 
     elements.append(
-        Paragraph("Network Security Overview", styles["Heading2"])
+        Paragraph(
+            "Network Security Overview",
+            styles["Heading2"]
+        )
     )
 
     summary_data = [
@@ -663,32 +774,65 @@ def export_security_pdf():
         ["Highest Device Risk", f"{highest_risk}/100"]
     ]
 
-    summary_table = Table(summary_data, colWidths=[240, 160])
+    summary_table = Table(
+        summary_data,
+        colWidths=[240, 160]
+    )
 
-    summary_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
-        ("TOPPADDING", (0, 0), (-1, 0), 10),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE")
-    ]))
+    summary_table.setStyle(
+        TableStyle([
+            (
+                "BACKGROUND",
+                (0, 0),
+                (-1, 0),
+                colors.HexColor("#1e293b")
+            ),
+            (
+                "TEXTCOLOR",
+                (0, 0),
+                (-1, 0),
+                colors.white
+            ),
+            (
+                "GRID",
+                (0, 0),
+                (-1, -1),
+                0.5,
+                colors.grey
+            ),
+            ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
+            ("TOPPADDING", (0, 0), (-1, 0), 10),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE")
+        ])
+    )
 
     elements.append(summary_table)
     elements.append(Spacer(1, 24))
 
     elements.append(
-        Paragraph("Recent Historical Security Alerts", styles["Heading2"])
+        Paragraph(
+            "Recent Historical Security Alerts",
+            styles["Heading2"]
+        )
     )
 
     alert_data = [
-        ["ID", "Device IP", "Alert Type", "Severity", "Risk", "Status"]
+        [
+            "ID",
+            "Device IP",
+            "Alert Type",
+            "Severity",
+            "Risk",
+            "Status"
+        ]
     ]
 
     alert_data.extend(alert_rows)
 
     if not alert_rows:
-        alert_data.append(["-", "No alerts", "-", "-", "-", "-"])
+        alert_data.append([
+            "-", "No alerts", "-", "-", "-", "-"
+        ])
 
     alerts_table = Table(
         alert_data,
@@ -696,15 +840,40 @@ def export_security_pdf():
         repeatRows=1
     )
 
-    alerts_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1),
-         [colors.white, colors.HexColor("#f1f5f9")])
-    ]))
+    alerts_table.setStyle(
+        TableStyle([
+            (
+                "BACKGROUND",
+                (0, 0),
+                (-1, 0),
+                colors.HexColor("#1e293b")
+            ),
+            (
+                "TEXTCOLOR",
+                (0, 0),
+                (-1, 0),
+                colors.white
+            ),
+            (
+                "GRID",
+                (0, 0),
+                (-1, -1),
+                0.5,
+                colors.grey
+            ),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            (
+                "ROWBACKGROUNDS",
+                (0, 1),
+                (-1, -1),
+                [
+                    colors.white,
+                    colors.HexColor("#f1f5f9")
+                ]
+            )
+        ])
+    )
 
     elements.append(alerts_table)
 
@@ -721,24 +890,27 @@ def export_security_pdf():
     )
 
 
+# ---------------------------------------------------------
+# Main Dashboard
+# ---------------------------------------------------------
 
 @app.route("/")
 def index():
     """Main NetGuardian Security Dashboard."""
+
     stats = get_network_stats()
 
+    devices = get_verified_local_devices()
 
-    devices = [
-        device for device in get_all_devices()
-        if is_local_ip(device.get("ip_address"))
-    ]
     reset_id = get_alert_reset_id()
 
     alerts = [
-        alert for alert in get_recent_alerts(limit=1000)
+        alert
+        for alert in get_recent_alerts(limit=1000)
         if alert["id"] > reset_id
         and is_local_ip(alert.get("ip_address"))
     ][:25]
+
     traffic = get_recent_traffic(limit=25)
 
     return render_template(
@@ -747,9 +919,13 @@ def index():
         devices=devices,
         alerts=alerts,
         traffic=traffic,
-        protection_mode=config.PROTECTION_MODE
+        protection_mode=manual_mode.get_mode()
     )
 
+
+# ---------------------------------------------------------
+# Device Pages
+# ---------------------------------------------------------
 
 @app.route("/device/<int:device_id>/trust", methods=["POST"])
 def update_device_trust(device_id):
@@ -772,7 +948,11 @@ def update_device_trust(device_id):
             return "Device not found", 404
 
         conn.execute(
-            "UPDATE devices SET trusted = ? WHERE id = ?",
+            """
+            UPDATE devices
+            SET trusted = ?
+            WHERE id = ?
+            """,
             (int(trusted_value), device_id)
         )
 
@@ -785,27 +965,70 @@ def update_device_trust(device_id):
     finally:
         conn.close()
 
-    return redirect(url_for("device_detail", device_id=device_id))
+    evaluate_device_risk(device_id, auto_quarantine=False)
+
+    return redirect(
+        url_for(
+            "device_detail",
+            device_id=device_id
+        )
+    )
 
 
 @app.route("/device/<int:device_id>")
 def device_detail(device_id):
-    """Detailed host view: profile, behavioral drift, traffic history, and quarantine."""
+    """Display device profile, traffic, risk and behavioral drift."""
+
     device = get_device_by_id(device_id)
+
     if not device:
         return "Device not found", 404
 
     drift = check_behaviour_drift_for_device(device_id)
-    traffic = get_recent_traffic(limit=50, device_id=device_id)
-    risk_lvl = get_risk_level(device.get("risk_score", 0))
+
+    traffic = get_recent_traffic(
+        limit=50,
+        device_id=device_id
+    )
+
+    risk_lvl = get_risk_level(
+        device.get("risk_score", 0)
+    )
 
     return render_template(
         "device.html",
         device=device,
         drift=drift,
         traffic=traffic,
-        risk_level=risk_lvl
+        risk_level=risk_lvl,
+        quarantine_logs=get_device_quarantine_logs(device_id),
+        router_enforcement=get_router_enforcement(device_id)
     )
+
+
+def get_device_quarantine_logs(device_id):
+    conn = get_connection()
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM quarantine_logs WHERE device_id=? ORDER BY id DESC LIMIT 30", (device_id,))]
+    finally:
+        conn.close()
+
+
+@app.route("/api/device/<int:device_id>/name", methods=["POST"])
+def api_device_name(device_id):
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get("device_name"), str) or not 1 <= len(data["device_name"].strip()) <= 100:
+        return jsonify(status="error", message="A device name of 1–100 characters is required."), 400
+    conn = get_connection()
+    try:
+        result = conn.execute("UPDATE devices SET device_name=? WHERE id=?", (data["device_name"].strip(), device_id))
+        if not result.rowcount:
+            return jsonify(status="error", message="Device not found"), 404
+        conn.commit()
+        return jsonify(status="success", message="Device name updated.")
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------
@@ -814,23 +1037,27 @@ def device_detail(device_id):
 
 @app.route("/api/stats", methods=["GET"])
 def api_stats():
-    """Return live network stats for real-time dashboard updating."""
+    """Return live network statistics."""
     return jsonify(get_network_stats())
 
 
 @app.route("/api/devices", methods=["GET"])
 def api_devices():
-    """Return all discovered devices."""
-    return jsonify(get_all_devices())
+    """Return verified local network devices."""
+    return jsonify(get_verified_local_devices())
 
 
 @app.route("/api/alerts", methods=["GET"])
 def api_alerts():
+    """Return local alerts created after the last reset."""
+
     reset_id = get_alert_reset_id()
 
     alerts = [
-        alert for alert in get_recent_alerts(limit=1000)
+        alert
+        for alert in get_recent_alerts(limit=1000)
         if alert["id"] > reset_id
+        and is_local_ip(alert.get("ip_address"))
     ]
 
     return jsonify(alerts[:50])
@@ -838,41 +1065,93 @@ def api_alerts():
 
 @app.route("/api/traffic", methods=["GET"])
 def api_traffic():
-    """Return recent network flows."""
+    """Return recent network traffic records."""
     return jsonify(get_recent_traffic(limit=50))
 
 
 @app.route("/api/scan", methods=["POST"])
 def api_scan():
-    """Trigger on-demand network device discovery."""
-    discovered = discover_devices()
-    evaluate_all_devices()
-    return jsonify({
-        "status": "success",
-        "count": len(discovered),
-        "devices": discovered
-    })
+    """Trigger discovery without overlapping background scans."""
+
+    try:
+        discovered = run_discovery_safely()
+
+        if discovered is None:
+            return jsonify({
+                "status": "busy",
+                "message": "A discovery scan is already running."
+            }), 409
+
+        evaluate_all_devices(
+            auto_quarantine=False
+        )
+
+        return jsonify({
+            "status": "success",
+            "count": len(discovered),
+            "devices": discovered
+        })
+
+    except Exception as error:
+        return jsonify({
+            "status": "error",
+            "message": str(error)
+        }), 500
 
 
-@app.route("/api/device/<int:device_id>/trust", methods=["POST"])
+@app.route(
+    "/api/device/<int:device_id>/trust",
+    methods=["POST"]
+)
 def api_toggle_trust(device_id):
     """Update trusted state for a device."""
-    data = request.get_json() or {}
-    new_trusted = bool(data.get("trusted", 1))
-    set_device_trusted(device_id, new_trusted)
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or type(data.get("trusted")) not in (bool, int) or data["trusted"] not in (0, 1):
+        return jsonify(status="error", message="trusted must be a boolean or 0/1."), 400
+    if get_device_by_id(device_id) is None:
+        return jsonify(status="error", message="Device not found"), 404
+    new_trusted = bool(data["trusted"])
+
+    set_device_trusted(
+        device_id,
+        new_trusted
+    )
+
     evaluate_device_risk(device_id)
-    state_str = "trusted" if new_trusted else "untrusted"
+
+    state_str = (
+        "trusted"
+        if new_trusted
+        else "untrusted"
+    )
+
     return jsonify({
         "status": "success",
         "message": f"Device marked as {state_str}."
     })
 
 
-@app.route("/api/device/<int:device_id>/quarantine", methods=["POST"])
+@app.route(
+    "/api/device/<int:device_id>/quarantine",
+    methods=["POST"]
+)
 def api_toggle_quarantine(device_id):
     """Manually quarantine or release a device."""
-    data = request.get_json() or {}
-    action = data.get("action", "quarantine")
+
+    if manual_mode.get_mode() == "LIVE":
+        return jsonify(status="error", code="ADMIN_PLAN_REQUIRED", message="LIVE operations require an administrator session and a confirmed router quarantine plan."), 409
+
+    managed=get_router_enforcement(device_id)
+    if managed.get('has_ownership') and managed['state']!='RELEASED':
+        return jsonify(status="error",code="LIVE_RELEASE_REQUIRED",message="This device has a managed LIVE quarantine. Use its administrator-confirmed router Release, available even in DEMO mode."),409
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or data.get("action") not in ("quarantine", "release"):
+        return jsonify(status="error", message="action must be quarantine or release."), 400
+    if get_device_by_id(device_id) is None:
+        return jsonify(status="error", message="Device not found"), 404
+    action = data["action"]
 
     if action == "quarantine":
         success, msg = quarantine_device(
@@ -886,41 +1165,83 @@ def api_toggle_quarantine(device_id):
             performed_by="Dashboard Administrator"
         )
 
-    return jsonify({"status": "success" if success else "error", "message": msg})
+    return jsonify({
+        "status": "success" if success else "error",
+        "message": msg,
+        "protection_mode": "DEMO",
+        "enforced": False
+    }), 200 if success else 409
 
 
-@app.route("/api/alerts/<int:alert_id>/resolve", methods=["POST"])
+@app.route(
+    "/api/alerts/<int:alert_id>/resolve",
+    methods=["POST"]
+)
 def api_resolve_alert(alert_id):
     """Mark an alert as resolved."""
+
+    conn = get_connection()
+    try:
+        if conn.execute("SELECT id FROM alerts WHERE id=?", (alert_id,)).fetchone() is None:
+            return jsonify(status="error", message="Alert not found"), 404
+    finally:
+        conn.close()
     resolve_alert(alert_id)
-    return jsonify({"status": "success", "message": f"Alert {alert_id} resolved."})
+
+    return jsonify({
+        "status": "success",
+        "message": f"Alert {alert_id} resolved."
+    })
 
 
-@app.route("/api/simulate/<attack_type>", methods=["POST"])
+@app.route(
+    "/api/simulate/<attack_type>",
+    methods=["POST"]
+)
 def api_simulate(attack_type):
-    """Execute controlled attack simulations to demonstrate NetGuardian response."""
+    """Run isolated attack simulations."""
+
     msg = ""
+
     if attack_type == "port_scan":
         msg = sim.simulate_port_scan()
+
     elif attack_type == "dns_anomaly":
         msg = sim.simulate_dns_anomaly()
+
     elif attack_type == "traffic_spike":
         msg = sim.simulate_traffic_spike()
+
     elif attack_type == "rogue_device":
         msg = sim.simulate_unknown_rogue_device()
+
     elif attack_type == "critical_attack":
         msg = sim.simulate_critical_incident()
+
     elif attack_type == "reset":
         msg = sim.reset_simulation()
+
     else:
-        return jsonify({"status": "error", "message": f"Unknown attack type: {attack_type}"}), 400
+        return jsonify({
+            "status": "error",
+            "message": (
+                f"Unknown attack type: {attack_type}"
+            )
+        }), 400
 
-    return jsonify({"status": "success", "message": msg})
+    return jsonify({
+        "status": "success",
+        "message": msg
+    })
 
 
-@app.route("/api/simulate/history", methods=["GET"])
+@app.route(
+    "/api/simulate/history",
+    methods=["GET"]
+)
 def api_simulation_history():
-    """Return demonstration events without accessing the real database."""
+    """Return isolated demonstration events."""
+
     return jsonify({
         "status": "success",
         "simulation": True,
@@ -932,71 +1253,460 @@ def api_simulation_history():
 # Background Engine Tasks
 # ---------------------------------------------------------
 
-def background_threat_monitor():
-    """Periodically evaluate device risk without automatic quarantine."""
-    while True:
+discovery_lock = threading.Lock()
+
+
+def run_discovery_safely(full_sweep=True):
+    """
+    Run one discovery operation without overlap.
+
+    Returns discovered devices or None if a scan
+    is already running.
+    """
+
+    if not discovery_lock.acquire(blocking=False):
+        print(
+            "[LiveDiscovery] Scan skipped: "
+            "another discovery operation is running.",
+            flush=True
+        )
+        return None
+
+    try:
+        return discover_devices(
+            full_sweep=full_sweep
+        )
+
+    finally:
+        discovery_lock.release()
+
+
+def background_device_monitor():
+    """
+    Perform periodic Scapy network discovery.
+
+    Huawei-managed Wi-Fi devices retain authoritative
+    online/offline status from the router API.
+    """
+
+    SCAN_INTERVAL = 60
+
+    print(
+        "[LiveDiscovery] Periodic Scapy monitor started.",
+        flush=True
+    )
+
+    while not engine_stop.wait(SCAN_INTERVAL):
+
+        started = time.monotonic()
+
         try:
-            print("[ThreatMonitor] Starting risk evaluation...", flush=True)
+            discovered = run_discovery_safely(
+                full_sweep=True
+            )
 
-            result = evaluate_all_devices(auto_quarantine=False)
+            if discovered is not None:
+                elapsed = time.monotonic() - started
 
+                print(
+                    "[LiveDiscovery] Periodic scan completed. "
+                    f"Observed: {len(discovered)} | "
+                    f"Duration: {elapsed:.1f}s",
+                    flush=True
+                )
+
+        except Exception as error:
             print(
-                f"[ThreatMonitor] Risk evaluation completed: {result}",
+                "[LiveDiscovery] Periodic scan ERROR: "
+                f"{type(error).__name__}: {error}",
                 flush=True
             )
 
-        except Exception as e:
+
+def background_threat_monitor():
+    """Evaluate device risk without automatic quarantine."""
+
+    while not engine_stop.is_set():
+        try:
+            print(
+                "[ThreatMonitor] Starting risk evaluation...",
+                flush=True
+            )
+
+            result = evaluate_all_devices(
+                auto_quarantine=False
+            )
+
+            print(
+                "[ThreatMonitor] Risk evaluation completed: "
+                f"{len(result)} devices",
+                flush=True
+            )
+
+        except Exception as error:
             import traceback
+
             print(
-                f"[ThreatMonitor] ERROR: {type(e).__name__}: {e}",
+                "[ThreatMonitor] ERROR: "
+                f"{type(error).__name__}: {error}",
                 flush=True
             )
+
             traceback.print_exc()
 
-        time.sleep(15)
+        engine_stop.wait(15)
 
 
-def startup_initialization():
-    """Initialize system, populate seed devices, run discovery and start threads."""
+# ---------------------------------------------------------
+# Huawei Router Live Monitoring
+# ---------------------------------------------------------
+
+def background_huawei_monitor():
+    """
+    Monitor Huawei WLAN clients every two seconds.
+
+    Two consecutive successful missing observations
+    are required before setting a known Wi-Fi device
+    Offline.
+
+    Router and wired devices are not marked Offline
+    by this monitor.
+    """
+
+    from router.router_sync import (
+        sync_connected_wifi_devices,
+        mark_disconnected_wifi_devices_offline,
+        register_huawei_wifi_devices
+    )
+
+    username = os.getenv(
+        "HUAWEI_ROUTER_USERNAME",
+        "user"
+    )
+
+    password = os.getenv(
+        "HUAWEI_ROUTER_PASSWORD"
+    )
+
+    if not password:
+        print(
+            "[HuaweiMonitor] Router password not configured.",
+            flush=True
+        )
+        return
+
+    client = None
+    previous_macs = None
+
+    observed_wifi_macs = set()
+    missed_polls = {}
+
+    print(
+        "[HuaweiMonitor] Background monitoring started.",
+        flush=True
+    )
+
+    while not engine_stop.is_set():
+        try:
+            if client is None:
+                client = HuaweiRouterClient(
+                    username=username,
+                    password=password,
+                    base_url=os.getenv("HUAWEI_ROUTER_URL", "http://192.168.8.1")
+                )
+
+                client.login()
+
+                print(
+                    "[HuaweiMonitor] Authentication successful.",
+                    flush=True
+                )
+
+            started = time.perf_counter()
+
+            # Only successful API responses change device
+            # presence status.
+            wifi_devices = client.get_connected_wifi_devices()
+
+            # Record known Huawei Wi-Fi MAC identities.
+            register_huawei_wifi_devices(wifi_devices)
+
+            current_macs = {
+                str(device["mac"]).upper()
+                for device in wifi_devices
+            }
+
+            # Connected Wi-Fi devices become Online.
+            sync_connected_wifi_devices(wifi_devices)
+
+            observed_wifi_macs.update(current_macs)
+
+            # Reset missed-poll counters for connected clients.
+            for mac in current_macs:
+                missed_polls[mac] = 0
+
+            confirmed_disconnected = set()
+
+            for mac in observed_wifi_macs - current_macs:
+                missed_polls[mac] = (
+                    missed_polls.get(mac, 0) + 1
+                )
+
+                if missed_polls[mac] == 2:
+                    confirmed_disconnected.add(mac)
+
+            if confirmed_disconnected:
+                updated = mark_disconnected_wifi_devices_offline(
+                    confirmed_disconnected
+                )
+
+                print(
+                    "[HuaweiMonitor] Confirmed Offline: "
+                    f"{len(confirmed_disconnected)} | "
+                    f"Database rows updated: {updated}",
+                    flush=True
+                )
+
+            elapsed = time.perf_counter() - started
+
+            if current_macs != previous_macs:
+
+                print(
+                    "[HuaweiMonitor] Wi-Fi clients: "
+                    f"{len(wifi_devices)} | "
+                    f"API + sync: {elapsed:.3f}s",
+                    flush=True
+                )
+
+                if previous_macs is not None:
+                    joined = current_macs - previous_macs
+                    left = previous_macs - current_macs
+
+                    for mac in sorted(joined):
+                        print(
+                            f"[HuaweiMonitor] CONNECTED: {mac}",
+                            flush=True
+                        )
+
+                    for mac in sorted(left):
+                        print(
+                            f"[HuaweiMonitor] DISCONNECTED: {mac}",
+                            flush=True
+                        )
+
+                previous_macs = current_macs
+
+        except Exception as error:
+
+            print(
+                "[HuaweiMonitor] ERROR: "
+                f"{type(error).__name__}: {error}",
+                flush=True
+            )
+
+            if client is not None:
+                client.close()
+
+            client = None
+
+            # Failed API calls must not count as
+            # missing-device observations.
+            engine_stop.wait(10)
+            continue
+
+        engine_stop.wait(2)
+    if client is not None:
+        client.close()
+
+
+# ---------------------------------------------------------
+# Startup Initialization
+# ---------------------------------------------------------
+
+def _startup_initialization():
+    """Initialize and start the NetGuardian monitoring engine."""
+
     print("=" * 60)
     print("Initializing NetGuardian Security System...")
     print("=" * 60)
 
-    # 1. Initialize SQLite Database Tables
+    # 1. Initialize SQLite database.
     initialize_database()
 
-    # 2. Seed standard lab devices if database has < 3 devices
+    # A process that died without shutdown leaves an open capture session.
+    # The process lock below ensures no active NetGuardian owns these rows.
+    conn = get_connection()
+    try:
+        conn.execute("UPDATE capture_sessions_v2 SET ended_at=MAX(started_at, ?), end_reason='ERROR' WHERE ended_at IS NULL",
+                     (datetime.now().isoformat(timespec="seconds"),))
+        conn.commit()
+    finally:
+        conn.close()
+
+    # 2. Seed demo data only for a fresh lab database.
     current_devs = get_all_devices()
-    if len(current_devs) < 3:
+
+    if config.SEED_DEMO_DEVICES and not current_devs:
         seed_demo_devices()
 
-    # 3. Perform initial network discovery
+    # 3. Fast initial Scapy scan.
+    # Huawei handles live Wi-Fi presence separately.
     try:
-        discover_devices()
-    except Exception as e:
-        print(f"[Init] Initial network discovery notice: {e}")
+        discover_devices(
+            full_sweep=False
+        )
 
-    # 4. Evaluate initial risk states
-    evaluate_all_devices()
+    except Exception as error:
+        print(
+            "[Init] Initial network discovery notice: "
+            f"{error}",
+            flush=True
+        )
 
-    # 5. Start passive traffic sniffer in background
+    # 4. Initial risk evaluation.
+    # Never automatically quarantine devices.
+    evaluate_all_devices(
+        auto_quarantine=False
+    )
+
+    # 5. Start passive packet capture.
     try:
         start_capture()
-    except Exception as e:
-        print(f"[Init] Passive sniffer notice: {e}")
 
-    # 6. Start background risk monitor
-    monitor_thread = threading.Thread(target=background_threat_monitor, daemon=True)
+    except Exception as error:
+        print(
+            f"[Init] Passive sniffer notice: {error}",
+            flush=True
+        )
+
+    # 6. Start background threat monitoring.
+    monitor_thread = threading.Thread(
+        target=background_threat_monitor,
+        name="NetGuardianThreatMonitor",
+        daemon=True
+    )
+
     monitor_thread.start()
+    _engine_threads.append(monitor_thread)
 
-    print("\nNetGuardian Security Engine is fully initialized and operational!")
-    print(f"Dashboard URL: http://{config.SERVER_HOST}:{config.SERVER_PORT}\n")
+    # 7. Start periodic Scapy monitoring.
+    discovery_thread = threading.Thread(
+        target=background_device_monitor,
+        name="NetGuardianPeriodicDiscovery",
+        daemon=True
+    )
 
+    discovery_thread.start()
+    _engine_threads.append(discovery_thread)
+
+    print(
+        "[Init] Periodic Scapy discovery enabled.",
+        flush=True
+    )
+
+    # 8. Start authenticated Huawei Wi-Fi monitoring.
+    huawei_thread = threading.Thread(
+        target=background_huawei_monitor,
+        name="NetGuardianHuaweiMonitor",
+        daemon=True
+    )
+
+    huawei_thread.start()
+    _engine_threads.append(huawei_thread)
+
+    from monitoring.engine import start_analytics_monitor
+    start_analytics_monitor()
+
+    print(
+        "[Init] Huawei router monitoring " + ("enabled." if os.getenv("HUAWEI_ROUTER_PASSWORD") else "not configured."),
+        flush=True
+    )
+
+    print(
+        "\nNetGuardian startup complete. Check the dashboard capture status for live monitoring health."
+    )
+
+    print(
+        f"Dashboard URL: "
+        f"http://{config.SERVER_HOST}:{config.SERVER_PORT}\n"
+    )
+
+
+engine_stop = threading.Event()
+_startup_lock = threading.Lock()
+_started = False
+_instance_handle = None
+_engine_threads = []
+
+
+def startup_initialization():
+    """Start one engine instance, even if called twice by a launcher."""
+    global _started, _instance_handle
+    from database import db
+    with _startup_lock:
+        if _started:
+            return
+        if any(thread.is_alive() for thread in _engine_threads):
+            raise RuntimeError("Previous monitoring workers are still shutting down")
+        _engine_threads.clear()
+        lock_path = Path(db.DB_PATH).with_suffix(".lock")
+        handle = open(lock_path, "a+b")
+        try:
+            if os.name == "nt":
+                import msvcrt
+                handle.seek(0)
+                if not handle.read(1):
+                    handle.write(b"0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            raise RuntimeError("Another NetGuardian monitoring engine is already running")
+        _instance_handle = handle
+        engine_stop.clear()
+        try:
+            _startup_initialization()
+            _started = True
+        except Exception:
+            shutdown_engine()
+            raise
+
+
+def shutdown_engine():
+    global _instance_handle, _started
+    engine_stop.set()
+    from capture.packet_capture import stop_capture
+    from monitoring.engine import stop_analytics_monitor
+    stop_analytics_monitor()
+    stop_capture()
+    for thread in _engine_threads:
+        if thread is not threading.current_thread():
+            thread.join(timeout=6)
+    if _instance_handle:
+        _instance_handle.close()
+        _instance_handle = None
+    _started = False
+
+
+import atexit
+atexit.register(shutdown_engine)
+
+
+# ---------------------------------------------------------
+# Application Entry Point
+# ---------------------------------------------------------
 
 if __name__ == "__main__":
+
     startup_initialization()
+
     app.run(
         host=config.SERVER_HOST,
         port=config.SERVER_PORT,
-        debug=False
+        debug=False,
+        use_reloader=False
     )

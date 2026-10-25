@@ -129,171 +129,419 @@ def scan_via_system_arp():
 
 
 
-def discover_devices(target_network=None, iface=None, allow_fallback=True):
-    """
-    Discover local network devices safely.
 
-    - Scan using Scapy ARP.
-    - Use Windows ARP cache as a fallback.
-    - Save each discovered device individually.
-    - Preserve conflicting MAC identities.
-    - Track confirmed IP addresses separately.
-    - Update offline counters only after a valid active scan.
+
+
+def discover_devices(
+    target_network=None,
+    iface=None,
+    allow_fallback=True,
+    full_sweep=True,
+    excluded_macs=None
+):
+
     """
+    Discover local devices using fresh ARP responses.
+
+    Features:
+    - Initial subnet scan
+    - Targeted retry of known devices
+    - Targeted recovery sweep for new devices
+    - MAC-based identity handling
+    - Safe offline tracking
+    """
+
+    import ipaddress
+    from database.models import get_all_devices
 
     target = target_network or config.TARGET_NETWORK
     interface = iface or detect_active_interface()
 
-    discovered = []
-    confirmed_ips = []
-    scan_succeeded = False
+    network = ipaddress.ip_network(target, strict=False)
 
+    discovered_by_ip = {}
+    confirmed_ips = []
+
+
+    # MAC addresses whose Online/Offline status is
+    # controlled by the Huawei router monitor.
+
+    # Load all Wi-Fi identities confirmed by the Huawei router.
+    # Keep disconnected Wi-Fi clients protected as well.
+    from router.router_sync import get_huawei_managed_macs
+
+    huawei_managed_macs = get_huawei_managed_macs()
+
+    excluded_macs = {
+        str(mac).strip().upper()
+        for mac in (excluded_macs or [])
+        if mac
+    }
+
+    # The persistent registry is always applied, including
+    # startup scans and manual dashboard scans.
+    excluded_macs.update(huawei_managed_macs)
+
+    print(
+        f"[Discovery] Huawei-protected devices: "
+        f"{len(excluded_macs)}",
+        flush=True
+    )
+
+
+    scan_succeeded = False
     current_time = datetime.now().isoformat(timespec="seconds")
 
     print("=" * 60)
     print("Starting NetGuardian Device Discovery...")
     print(f"Scanning target network: {target}")
-
-    if interface:
-        print(f"Active interface       : {interface}")
-
+    print(f"Active interface: {interface}")
     print("=" * 60)
 
-    # 1. Active Scapy ARP scan
-    if SCAPY_AVAILABLE and interface:
+    if not SCAPY_AVAILABLE or not interface:
+        print("[Discovery] Active Scapy scanning unavailable.")
+        return []
+
+    # Restrict recovery sweeps to small local networks.
+    # NetGuardian's configured /24 network is supported.
+    if network.num_addresses > 512:
+        print(
+            "[Discovery] Network too large for targeted recovery. "
+            "Use a subnet containing 512 addresses or fewer."
+        )
+        return []
+
+    def record_responses(answered, source):
+        """Keep only fresh, valid local ARP responses."""
+
+        for _, response in answered:
+            ip = str(response.psrc)
+            mac = str(response.hwsrc).upper()
+
+            if not is_target_network_ip(ip, target):
+                continue
+
+            if mac in {
+                "",
+                "00:00:00:00:00:00",
+                "FF:FF:FF:FF:FF:FF"
+            }:
+                continue
+
+            if ip not in discovered_by_ip:
+                discovered_by_ip[ip] = mac
+                print(f"[{source}] FOUND {ip} -> {mac}")
+
+            elif discovered_by_ip[ip] != mac:
+                print(
+                    f"[Discovery] Conflicting ARP responses "
+                    f"for {ip}. Keeping first observation "
+                    "for this scan."
+                )
+
+    def active_probe(addresses, source, timeout=2, retry=0):
+        """Actively request ARP responses from specified IPs."""
+
+        if not addresses:
+            return
+
+        packet = (
+            Ether(dst="ff:ff:ff:ff:ff:ff")
+            / ARP(pdst=addresses)
+        )
+
+        answered, _ = srp(
+            packet,
+            timeout=timeout,
+            retry=retry,
+            verbose=False,
+            iface=interface
+        )
+
+        record_responses(answered, source)
+
+    # --------------------------------------------------
+    # 1. Initial full subnet ARP scan
+    # --------------------------------------------------
+    try:
+        print("\n[Discovery] Phase 1: Initial subnet scan")
+
+        active_probe(
+            target,
+            "SUBNET",
+            timeout=2
+        )
+
+        scan_succeeded = True
+
+    except Exception as error:
+        print(f"[Discovery] Initial scan failed: {error}")
+
+    # --------------------------------------------------
+    # 2. Retry known device addresses
+    # --------------------------------------------------
+    known_ips = set()
+
+    try:
+        for device in get_all_devices():
+            ip = device.get("ip_address")
+
+            if ip and is_target_network_ip(ip, target):
+                known_ips.add(ip)
+
+    except Exception as error:
+        print(f"[Discovery] Known device lookup: {error}")
+
+    # Windows ARP cache supplies candidate IPs only.
+    # Cached entries are NOT treated as proof of being online.
+    if allow_fallback:
         try:
-            packet = (
-                Ether(dst="ff:ff:ff:ff:ff:ff")
-                / ARP(pdst=target)
-            )
+            for device in scan_via_system_arp():
+                ip = device.get("ip")
 
-            answered, _ = srp(
-                packet,
+                if ip and is_target_network_ip(ip, target):
+                    known_ips.add(ip)
+
+        except Exception as error:
+            print(f"[Discovery] ARP candidate lookup: {error}")
+
+    # Include the configured gateway.
+    gateway_ip = str(next(network.hosts()))
+    known_ips.add(gateway_ip)
+
+    pending_known = sorted(
+        known_ips - set(discovered_by_ip),
+        key=lambda ip: ipaddress.ip_address(ip)
+    )
+
+    print("\n[Discovery] Phase 2: Known device recovery")
+
+
+    if pending_known:
+        try:
+            active_probe(
+                pending_known,
+                "KNOWN",
                 timeout=2,
-                verbose=0,
-                iface=interface
+                retry=1
+            )
+        except Exception as error:
+            print(
+                "[Discovery] Known-device recovery failed: "
+                f"{error}"
             )
 
-            scan_succeeded = True
 
-            for _, received in answered:
-                ip_address = received.psrc
+    # --------------------------------------------------
+    # 3. Targeted recovery sweep
+    # --------------------------------------------------
+    # This sends individual ARP queries for IPs that
+    # were not found during the initial scan.
+    # It is slower, but helps recover phones missed
+    # by a single subnet broadcast.
 
-                if not is_target_network_ip(ip_address, target):
-                    continue
+    print("\n[Discovery] Phase 3: Targeted recovery sweep")
 
-                mac_address = received.hwsrc.upper()
-                hostname = get_hostname(ip_address)
 
-                discovered.append({
-                    "ip": ip_address,
-                    "mac": mac_address,
-                    "hostname": hostname,
-                    "device_type": get_device_type(
-                        hostname,
-                        ip_address
-                    )
-                })
-
-        except Exception as e:
-            scan_succeeded = False
-            print(f"[Discovery] Scapy ARP scan failed: {e}")
-
-    # 2. Fallback to Windows ARP cache
-    if not discovered and allow_fallback:
-        print("[Discovery] Using OS ARP table fallback...")
-
-        discovered = [
-            device
-            for device in scan_via_system_arp()
-            if is_target_network_ip(device["ip"], target)
+    if full_sweep:
+        remaining = [
+            str(ip)
+            for ip in network.hosts()
+            if str(ip) not in discovered_by_ip
+            and str(ip) not in known_ips
         ]
+    else:
+        remaining = []
+        print(
+            "[Discovery] Full recovery sweep skipped "
+            "(fast presence scan)."
+        )
 
-    # 3. Ensure local computer is recorded
+
+    batch_size = 32
+
+    for start in range(0, len(remaining), batch_size):
+        batch = remaining[start:start + batch_size]
+
+        try:
+            active_probe(
+                batch,
+                "RECOVERY",
+                timeout=1.5
+            )
+
+        except Exception as error:
+            print(
+                "[Discovery] Recovery batch failed: "
+                f"{error}"
+            )
+
+    # --------------------------------------------------
+    # 4. Preserve local computer identity
+    # --------------------------------------------------
     local_ip = config.get_local_ip()
 
     if (
         local_ip != "127.0.0.1"
         and is_target_network_ip(local_ip, target)
-        and not any(d["ip"] == local_ip for d in discovered)
+        and local_ip not in discovered_by_ip
     ):
-        discovered.append({
-            "ip": local_ip,
-            "mac": "LOCAL-HOST",
-            "hostname": socket.gethostname(),
-            "device_type": "Workstation"
-        })
+        # Local interface addresses can be validated
+        # directly without an ARP reply to ourselves.
+        try:
+            from scapy.all import get_if_hwaddr
 
-    # 4. Save EACH discovered device
-    print("\nDevices Discovered and Saved to Database:")
+            local_mac = get_if_hwaddr(interface).upper()
+
+            if local_mac not in {
+                "00:00:00:00:00:00",
+                "FF:FF:FF:FF:FF:FF"
+            }:
+                discovered_by_ip[local_ip] = local_mac
+                print(
+                    f"[LOCAL] FOUND {local_ip} -> {local_mac}"
+                )
+
+        except Exception as error:
+            print(f"[Discovery] Local MAC lookup: {error}")
+
+    # --------------------------------------------------
+    # 5. Save confirmed devices
+    # --------------------------------------------------
+    discovered = []
+
+    print("\nDevices Discovered:")
     print("-" * 70)
 
-    for dev in discovered:
-        ip = dev["ip"]
-        mac = dev.get("mac", "UNKNOWN")
-        host = dev.get("hostname") or "Unknown"
 
-        dtype = (
-            dev.get("device_type")
-            or get_device_type(host, ip)
-        )
+    # Reuse previously discovered names during FAST scans.
+    # Resolve hostnames only during FULL scans.
+    known_devices_by_mac = {}
+
+    for known in get_all_devices():
+        known_mac = str(known.get("mac_address") or "").upper()
+
+        if known_mac:
+            known_devices_by_mac[known_mac] = known
+
+    for ip in sorted(
+        discovered_by_ip,
+        key=lambda address: ipaddress.ip_address(address)
+    ):
+        mac = discovered_by_ip[ip]
+
+        existing = known_devices_by_mac.get(mac)
+
+        if ip == local_ip:
+            hostname = socket.gethostname()
+
+        elif full_sweep:
+            hostname = get_hostname(ip)
+
+        elif existing:
+            hostname = existing.get("hostname")
+
+        else:
+            hostname = None
+
+        if existing and not full_sweep:
+            device_type = existing.get("device_type")
+        else:
+            device_type = get_device_type(hostname, ip)
+
+
+        device = {
+            "ip": ip,
+            "mac": mac,
+            "hostname": hostname,
+            "device_type": device_type
+        }
+
+        discovered.append(device)
 
         print(f"IP Address : {ip}")
         print(f"MAC Address: {mac}")
-        print(f"Hostname   : {host}")
-        print(f"Device Type: {dtype}")
+        print(f"Hostname   : {hostname}")
+        print(f"Device Type: {device_type}")
 
-        # MUST remain inside the for loop.
-        device_id = add_or_update_device(
-            ip_address=ip,
-            mac_address=mac,
-            hostname=host,
-            device_type=dtype,
-            timestamp=current_time
-        )
+        try:
 
-        if device_id is not None:
-            confirmed_ips.append(ip)
-            print(
-                f"[Discovery] Confirmed device ID: {device_id}"
+            if mac in excluded_macs:
+                # Huawei owns this Wi-Fi device's presence status.
+                # Scapy can observe it but must not overwrite
+                # Huawei-confirmed Online/Offline information.
+                confirmed_ips.append(ip)
+
+                print(
+                    f"[Discovery] Huawei-managed device observed: "
+                    f"{ip} ({mac}). Status update skipped."
+                )
+
+                continue
+
+            device_id = add_or_update_device(
+                ip_address=ip,
+                mac_address=mac,
+                hostname=hostname,
+                device_type=device_type,
+                timestamp=current_time
             )
-        else:
+
+            if device_id is not None:
+                confirmed_ips.append(ip)
+                print(
+                    f"[Discovery] Confirmed device ID: "
+                    f"{device_id}"
+                )
+            else:
+                print(
+                    f"[Discovery] Identity conflict at {ip}. "
+                    "Existing identities preserved."
+                )
+
+        except Exception as error:
             print(
-                f"[Discovery] Identity conflict at {ip}. "
-                "Existing identity preserved."
+                f"[Discovery] Database update failed "
+                f"for {ip}: {error}"
             )
 
         print("-" * 70)
 
-    # 5. Safe offline tracking
-    reference_gateway = "192.168.8.1"
-
+    # --------------------------------------------------
+    # 6. Update online/offline tracking
+    # --------------------------------------------------
     if (
         scan_succeeded
-        and reference_gateway in confirmed_ips
+        and gateway_ip in confirmed_ips
     ):
         try:
-            mark_missing_devices_offline(confirmed_ips)
+            mark_missing_devices_offline(
+                confirmed_ips,
+                excluded_macs=excluded_macs
+            )
 
             print(
                 "[Discovery] Offline tracking updated "
-                "(reference gateway confirmed)."
+                "(gateway confirmed)."
             )
 
-        except Exception as e:
+        except Exception as error:
             print(
-                f"[Discovery] Offline tracking notice: {e}"
+                "[Discovery] Offline tracking error: "
+                f"{error}"
             )
     else:
         print(
             "[Discovery] Offline tracking skipped: "
-            "active scan or gateway verification unsuccessful."
+            "gateway not confirmed or scan failed."
         )
 
     print(f"Total devices observed: {len(discovered)}")
-    print(f"Database identities confirmed: {len(confirmed_ips)}\n")
+    print(f"Database identities confirmed: {len(confirmed_ips)}")
 
     return discovered
+
+
 
 
 def seed_demo_devices():

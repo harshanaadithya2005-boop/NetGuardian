@@ -1,174 +1,96 @@
-import sys
-import subprocess
+"""DEMO-only markers. LIVE operations are in response.router_quarantine."""
 import ipaddress
-from pathlib import Path
 from datetime import datetime
 
-# Ensure project root is in sys.path
-BASE_DIR = Path(__file__).resolve().parent.parent
-if str(BASE_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_DIR))
-
-from database.models import set_device_status, log_quarantine, create_alert, get_device_by_id
 import config
+from database.db import get_connection
 
 
 def apply_firewall_isolation(ip_address):
-    """
-    Apply host/network firewall block rule for quarantined device.
-    Attempts native Windows Firewall rule; falls back cleanly to simulated enforcement if non-admin.
-    """
-    # DEMO mode: simulate isolation without changing Windows Firewall
-    if config.PROTECTION_MODE == "DEMO":
-        return (
-            False,
-            f"[DEMO MODE] Simulated quarantine for {ip_address}. "
-            "No Windows Firewall rules were created."
-        )
-
-    rule_name_in = f"NetGuardian_Block_In_{ip_address}"
-    rule_name_out = f"NetGuardian_Block_Out_{ip_address}"
-    success = False
-    details = ""
-
-    try:
-        # Windows netsh command to block all inbound traffic from this host
-        cmd_in = ["netsh", "advfirewall", "firewall", "add", "rule",
-                  f"name={rule_name_in}", "dir=in", "action=block", f"remoteip={ip_address}"]
-        cmd_out = ["netsh", "advfirewall", "firewall", "add", "rule",
-                   f"name={rule_name_out}", "dir=out", "action=block", f"remoteip={ip_address}"]
-
-        subprocess.run(cmd_in, capture_output=True, check=True)
-        subprocess.run(cmd_out, capture_output=True, check=True)
-        success = True
-        details = f"Active Windows Firewall rule created blocking {ip_address}"
-    except Exception as e:
-        # Non-admin or non-Windows environment fallback to simulated ACL isolation
-        details = f"Simulated Cisco ACL / iptables isolation applied (Host: {ip_address}): {e}"
-
-    return success, details
+    return False, f"[DEMO MODE] Quarantine simulated for {ip_address}. No router or firewall rules were created."
 
 
 def remove_firewall_isolation(ip_address):
-    """Remove firewall isolation rules when a device is released."""
+    return False, "[DEMO MODE] No router or firewall rules were changed."
 
-    # DEMO mode: do not modify Windows Firewall
-    if config.PROTECTION_MODE == "DEMO":
-        return
 
-    rule_name_in = f"NetGuardian_Block_In_{ip_address}"
-    rule_name_out = f"NetGuardian_Block_Out_{ip_address}"
+def _validate_target(device, supplied_ip):
+    address = device["ip_address"]
+    if supplied_ip is not None and supplied_ip != address:
+        return "Quarantine blocked: supplied IP does not match device identity."
     try:
-        cmd_in = ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={rule_name_in}"]
-        cmd_out = ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={rule_name_out}"]
-        subprocess.run(cmd_in, capture_output=True)
-        subprocess.run(cmd_out, capture_output=True)
-    except Exception:
-        pass
+        ip = ipaddress.ip_address(address)
+        network = ipaddress.ip_network(config.TARGET_NETWORK, strict=False)
+        if ip not in network or ip in (network.network_address, network.broadcast_address):
+            return "Quarantine blocked: target is outside the monitored host range."
+    except (ValueError, TypeError):
+        return "Quarantine blocked: invalid IP or network configuration."
+    gateways = {config.GATEWAY_IP, "192.168.8.1", str(next(network.hosts()))}
+    if address in gateways or "router" in str(device["device_type"]).lower() or "gateway" in str(device["device_type"]).lower():
+        return "Quarantine blocked: gateway devices are protected."
+    if address == config.get_local_ip():
+        return "Quarantine blocked: the NetGuardian monitoring host is protected."
+    return None
 
 
-def quarantine_device(device_id, ip_address=None, reason="High Risk Score threshold exceeded (>= 70)", performed_by="NetGuardian Auto-Engine"):
-    """
-    Isolate device:
-    1. Update status to 'quarantined' in database
-    2. Enforce firewall / network isolation rule
-    3. Log audit event to quarantine_logs
-    4. Issue critical alert on dashboard
-    """
-    if not ip_address:
-        dev = get_device_by_id(device_id)
-        if dev:
-            ip_address = dev["ip_address"]
-        else:
+def quarantine_device(device_id, ip_address=None, reason="Manual administrator action", performed_by="Administrator"):
+    """Atomically mark, audit and alert a manual DEMO quarantine."""
+    if config.PROTECTION_MODE != "DEMO":
+        return False, "LIVE quarantine requires an authenticated, confirmed router plan."
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        dev = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
+        if dev is None:
             return False, "Device not found"
-
-            # Safety check: Only quarantine devices on our local network
-    try:
-        local_network = ipaddress.ip_network(
-            config.TARGET_NETWORK, strict=False
-        )
-        device_ip = ipaddress.ip_address(ip_address)
-
-        if device_ip not in local_network:
-            return False, (
-                f"Quarantine blocked: {ip_address} is outside "
-                f"the local network {local_network}."
-            )
-
-    except ValueError:
-        return False, (
-            f"Quarantine blocked: Invalid IP address or network configuration."
-        )
-
-    # Protect the network gateway from accidental quarantine.
-    # This check applies to both DEMO and enforcement modes.
-    if ip_address == "192.168.8.1":
-        return False, (
-            "Quarantine blocked: the network gateway requires "
-            "separate administrator approval."
-        )
-
-    print(f"\n[QUARANTINE TRIGGERED] Isolating Device ID {device_id} ({ip_address})")
-    print(f"Reason: {reason} | By: {performed_by}")
-
-    # 1. Update DB Status
-    set_device_status(device_id, "quarantined")
-
-    # 2. Network Enforcement
-    applied, net_msg = apply_firewall_isolation(ip_address)
-
-    # 3. Audit Log
-    log_quarantine(device_id, action="quarantined", reason=f"{reason} | {net_msg}", performed_by=performed_by)
-
-    # 4. Quarantine Alert
-    if config.PROTECTION_MODE == "DEMO":
-        alert_type = "quarantine_simulated"
-        alert_description = (
-            f"[DEMO MODE] Quarantine simulated for {ip_address}. "
-            f"Reason: {reason}. No firewall rules were applied."
-        )
-    else:
-        alert_type = "quarantine_enforced" if applied else "quarantine_failed"
-        alert_description = (
-            f"Device {ip_address}: {net_msg}. Reason: {reason}."
-        )
-
-    create_alert(
-        device_id=device_id,
-        alert_type=alert_type,
-        risk_score=95,
-        severity="CRITICAL" if applied else "WARNING",
-        description=alert_description
-    )
-
-    return True, net_msg
+        problem = _validate_target(dev, ip_address)
+        if problem:
+            return False, problem
+        if dev["status"] == "quarantined":
+            return True, "[DEMO MODE] Device is already marked quarantined; no blocking is active."
+        now = datetime.now().isoformat(timespec="seconds")
+        _, message = apply_firewall_isolation(dev["ip_address"])
+        conn.execute("INSERT OR REPLACE INTO quarantine_state (device_id, previous_status, observed_ip, mode) VALUES (?, ?, ?, 'DEMO')",
+                     (device_id, dev["status"], dev["ip_address"]))
+        conn.execute("UPDATE devices SET status='quarantined' WHERE id=?", (device_id,))
+        conn.execute("INSERT INTO quarantine_logs (device_id,action,reason,performed_by,timestamp) VALUES (?, 'quarantined', ?, ?, ?)",
+                     (device_id, f"{reason} | {message}", performed_by, now))
+        conn.execute("INSERT INTO alerts (device_id,alert_type,risk_score,severity,description,status,timestamp) VALUES (?, 'quarantine_simulated', ?, 'MEDIUM', ?, 'open', ?)",
+                     (device_id, dev["risk_score"], f"{message} Reason: {reason}", now))
+        conn.commit()
+        return True, message
+    finally:
+        conn.close()
 
 
 def release_device(device_id, ip_address=None, performed_by="Administrator"):
-    """
-    Release device from quarantine:
-    1. Restore status to 'online' in database
-    2. Remove firewall / network isolation rule
-    3. Log audit event
-    """
-    if not ip_address:
-        dev = get_device_by_id(device_id)
-        if dev:
-            ip_address = dev["ip_address"]
-        else:
+    """Reverse a DEMO quarantine without claiming a device is currently online."""
+    if config.PROTECTION_MODE != "DEMO":
+        return False, "LIVE release requires an authenticated, confirmed router plan."
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        dev = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
+        if dev is None:
             return False, "Device not found"
-
-    print(f"\n[QUARANTINE RELEASE] Releasing Device ID {device_id} ({ip_address})")
-
-    set_device_status(device_id, "online")
-    remove_firewall_isolation(ip_address)
-    log_quarantine(device_id, action="released", reason="Manual administrator release", performed_by=performed_by)
-
-    return True, f"Device {ip_address} released from quarantine."
-
-
-if __name__ == "__main__":
-    print("Testing Quarantine Response Module:")
-    success, msg = apply_firewall_isolation("192.168.1.99")
-    print(f"Result: {msg}")
-    remove_firewall_isolation("192.168.1.99")
+        if ip_address is not None and ip_address != dev["ip_address"]:
+            return False, "Release blocked: supplied IP does not match device identity."
+        if dev["status"] != "quarantined":
+            return True, "Device is already released."
+        state = conn.execute("SELECT * FROM quarantine_state WHERE device_id=?", (device_id,)).fetchone()
+        # Legacy quarantine records have no verified recovery metadata. Release
+        # their marker, leaving discovery to establish current online presence.
+        if state and state["mode"] != "DEMO":
+            return False, "Release requires the tested recovery path for the recorded enforcement mode."
+        status = state["previous_status"] if state else "offline"
+        if status not in {"online", "offline"}:
+            status = "offline"
+        conn.execute("UPDATE devices SET status=? WHERE id=?", (status, device_id))
+        conn.execute("DELETE FROM quarantine_state WHERE device_id=?", (device_id,))
+        conn.execute("UPDATE alerts SET status='resolved' WHERE device_id=? AND alert_type='quarantine_simulated' AND status='open'", (device_id,))
+        conn.execute("INSERT INTO quarantine_logs (device_id,action,reason,performed_by,timestamp) VALUES (?, 'released', ?, ?, ?)",
+                     (device_id, "Manual DEMO release; no network rules changed", performed_by, datetime.now().isoformat(timespec="seconds")))
+        conn.commit()
+        return True, f"[DEMO MODE] Device {dev['ip_address']} released; no network rules changed."
+    finally:
+        conn.close()

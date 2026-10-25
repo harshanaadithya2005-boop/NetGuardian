@@ -1,0 +1,22 @@
+<section class="card mt-20" id="security-pipeline" {% if device is defined %}data-device-id="{{ device.id }}"{% endif %}>
+    <h3>Real-Time Threat Detection and Response</h3>
+    <p>Recorded packet evidence · Risk is advisory · Physical automatic enforcement is unavailable</p>
+    <p id="security-health" role="status">Loading evidence...</p>
+    <h4>Risk score explanation</h4>
+    <div id="security-risks"></div>
+    <h4>Real detection evidence</h4>
+    <div id="security-evidence"></div>
+    <h4>Automatic response decisions</h4>
+    <p id="security-policy"></p>
+    <div id="security-decisions"></div>
+    <details><summary>Administrator response policy</summary>
+        <form id="security-policy-form">
+            <label for="response-policy-mode">Decision mode</label><select id="response-policy-mode" name="mode"><option value="DEMO">DEMO decisions</option><option value="MANUAL_LIVE">Manual LIVE review (incident lock applies)</option><option value="AUTOMATIC_RESPONSE">Automatic response (simulation only)</option></select>
+            <label><input type="checkbox" name="enabled"> Enable policy evaluation for automatic simulated response</label>
+            <label>Minimum risk <input type="number" name="min_risk" min="40" max="100" value="70" required></label>
+            <label>Minimum confidence <input type="number" name="min_confidence" min="0.5" max="1" step="0.05" value="0.8" required></label>
+            <button class="btn btn-outline" type="submit" data-security-admin disabled>Save response policy</button>
+        </form>
+        <p>Requires administrator sign-in above. This policy cannot enable physical blocking. Multiple independent recent indicators and identity checks remain mandatory.</p>
+    </details>
+</section>
