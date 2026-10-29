@@ -631,7 +631,32 @@ function createAlertElement(alert) {
     content.appendChild(deviceInfo);
     item.appendChild(content);
 
-    // Resolve action for open alerts
+    // Actions for alerts
+    const alertId = Number(alert.id);
+    if (Number.isSafeInteger(alertId) && alertId > 0) {
+        const actions = createElement("div", "action-buttons");
+        actions.style.marginLeft = "auto";
+        actions.style.flexShrink = "0";
+
+        const explainBtn = createElement("button", "btn btn-sm btn-outline");
+        explainBtn.type = "button";
+        explainBtn.title = "AI Incident Investigation";
+        explainBtn.innerHTML = '<i class="fa-solid fa-brain text-accent"></i>';
+        explainBtn.addEventListener("click", () => openAiExplainModal(alertId));
+        actions.appendChild(explainBtn);
+
+        if (String(alert.status || "").toLowerCase() === "open") {
+            const button = createElement("button", "btn btn-sm btn-resolve");
+            button.type = "button";
+            button.title = "Resolve alert";
+            button.innerHTML = '<i class="fa-solid fa-check"></i>';
+            button.addEventListener("click", () => resolveAlert(alertId));
+            actions.appendChild(button);
+        }
+        item.appendChild(actions);
+    }
+
+    return item;
     if (
         String(alert.status || "").toLowerCase() === "open"
     ) {

@@ -1,64 +1,48 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="breadcrumb">
-    <a href="/"><i class="fa-solid fa-arrow-left"></i> Back to Dashboard</a>
+<div class="breadcrumb" style="margin-bottom: 20px;">
+    <a href="/devices" class="btn btn-sm btn-outline"><i class="fa-solid fa-arrow-left"></i> Back to Devices Registry</a>
 </div>
 
+<!-- Device Profile Header -->
 <div class="device-detail-header card">
     <div class="device-profile-title">
-        <div class="device-avatar"><i class="fa-solid fa-laptop-code"></i></div>
+        <div class="device-avatar">
+            <i class="fa-solid {{ 'fa-laptop' if 'workstation' in (device.device_type|lower) else ('fa-mobile-screen' if 'phone' in (device.device_type|lower) else ('fa-microchip' if 'iot' in (device.device_type|lower) else 'fa-network-wired')) }}"></i>
+        </div>
         <div>
             <h2>{{ device.device_name or device.hostname or 'Device ' ~ device.id }}</h2>
             <div class="device-subdetails">
                 <span><strong>IP:</strong> <code>{{ device.ip_address }}</code></span>
-                <span><strong>MAC:</strong> <code>{{ device.mac_address or 'Unknown' }}</code></span>
+                <span><strong>MAC:</strong> <code class="mono">{{ device.mac_address or 'Unknown' }}</code></span>
                 <span><strong>Type:</strong> <span class="device-tag">{{ device.device_type }}</span></span>
                 <span><strong>First Seen:</strong> {{ device.first_seen }}</span>
             </div>
         </div>
     </div>
     <div class="device-header-actions">
-
-
-{% if device.trusted %}
-    <span class="badge badge-success badge-lg">
-        <i class="fa-solid fa-shield-halved"></i>
-        TRUSTED DEVICE
-    </span>
-
-    <form method="POST"
-          action="{{ url_for('update_device_trust', device_id=device.id) }}"
-          style="display:inline;">
-        <input type="hidden" name="trusted" value="0">
-
-        <button type="submit"
-                class="btn btn-warning"
-                onclick="return confirm('Remove trust from this device?');">
-            <i class="fa-solid fa-shield"></i>
-            Remove Trust
-        </button>
-    </form>
-{% else %}
-    <span class="badge badge-warning badge-lg">
-        <i class="fa-solid fa-triangle-exclamation"></i>
-        UNTRUSTED DEVICE
-    </span>
-
-    <form method="POST"
-          action="{{ url_for('update_device_trust', device_id=device.id) }}"
-          style="display:inline;">
-        <input type="hidden" name="trusted" value="1">
-
-        <button type="submit"
-                class="btn btn-success"
-                onclick="return confirm('Trust this known device?');">
-            <i class="fa-solid fa-shield-halved"></i>
-            Trust Device
-        </button>
-    </form>
-{% endif %}
-
+        {% if device.trusted %}
+        <span class="badge badge-success badge-lg">
+            <i class="fa-solid fa-shield-halved"></i> TRUSTED DEVICE
+        </span>
+        <form method="POST" action="{{ url_for('update_device_trust', device_id=device.id) }}" style="display:inline;">
+            <input type="hidden" name="trusted" value="0">
+            <button type="submit" class="btn btn-warning" onclick="return confirm('Remove trust from this device?');">
+                <i class="fa-solid fa-shield"></i> Remove Trust
+            </button>
+        </form>
+        {% else %}
+        <span class="badge badge-warning badge-lg">
+            <i class="fa-solid fa-triangle-exclamation"></i> UNTRUSTED DEVICE
+        </span>
+        <form method="POST" action="{{ url_for('update_device_trust', device_id=device.id) }}" style="display:inline;">
+            <input type="hidden" name="trusted" value="1">
+            <button type="submit" class="btn btn-success" onclick="return confirm('Trust this known device?');">
+                <i class="fa-solid fa-shield-halved"></i> Trust Device
+            </button>
+        </form>
+        {% endif %}
 
         {% if protection_mode == 'DEMO' and not (router_enforcement.has_ownership and router_enforcement.state != 'RELEASED') %}
         {% if device.status == 'quarantined' %}
@@ -76,193 +60,293 @@
     </div>
 </div>
 
-<section class="card mt-20" id="router-enforcement" data-device-id="{{ device.id }}" data-device-mac="{{ device.mac_address or '' }}">
-    <h3>LIVE router enforcement</h3>
-    <p><strong id="router-enforcement-state">{{ router_enforcement.state }}</strong> · Separate from any DEMO marker above.</p>
-    <p id="router-enforcement-message">{{ router_enforcement.message }}</p>
-    <p id="router-verification">{% if router_enforcement.verified_at %}Last verified: {{ router_enforcement.verified_at }}{% else %}No router enforcement verified.{% endif %}</p>
-    <p>ACTIVE means deny-list entries in the selected SSID scope were read back successfully. Client disconnection is shown separately; a rule alone does not prove immediate Wi-Fi disconnection.</p>
-    <fieldset><legend>SSID filter scope for a new quarantine</legend>
-        {% for i in range(4) %}<label><input type="checkbox" name="router-ssid" value="{{ i }}" {% if i == 0 %}checked{% endif %}>SSID index {{ i }}</label> {% endfor %}
-    </fieldset>
-    <label><input type="checkbox" id="router-allow-enable">I explicitly approve enabling deny-list filtering on selected currently disabled, empty lists. Existing whitelist modes will be refused.</label>
-    <p>Select only the intended SSID records. Record 0 (router Wi-Fi) was verified in the controlled test; other scopes require their own review. Other rules and Wi-Fi settings are preserved.</p>
-    <details id="router-identity-details">
-        <summary>Verify current Wi-Fi identity (private/randomized MAC)</summary>
-        <p>On the selected phone, open Settings → Connections → Wi-Fi → the gear beside its connected network. Read its current Wi-Fi MAC address and IP address there, then enter them below. Do not copy another device's address or rely on the hostname.</p>
-        <p>A fixed private address for this network can be verified. If the address rotates on reconnect, select <strong>Phone MAC</strong> on the phone, reconnect, run discovery and open the newly discovered device record before continuing.</p>
-        <form id="router-identity-form">
-            <p><label>MAC read from this device <input name="mac" required maxlength="17" autocomplete="off" pattern="[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}" placeholder="Read from the selected device"></label></p>
-            <p><label>IP read from this device <input name="ip" required maxlength="15" autocomplete="off" placeholder="Read from its Wi-Fi details"></label></p>
-            <p><label><input type="checkbox" name="stable_mac_confirmed" required> I independently checked this device's Wi-Fi settings; this MAC stays fixed for the selected network.</label></p>
-            <p><label><input type="checkbox" name="non_management" required> This is not the NetGuardian desktop, router or another management device.</label></p>
-            <button type="submit" class="btn btn-outline" id="router-identity-submit" disabled>Verify identity (read-only router check)</button>
-        </form>
-        <p id="router-identity-status" role="status">Verification is scoped to this device, MAC, IP, SSID and administrator session for up to 15 minutes. A restart or changed identity requires verification again. No router settings are changed.</p>
-    </details>
-    <div class="action-buttons">
-        <button type="button" class="btn btn-danger" id="router-plan-block">Quarantine (LIVE): prepare plan</button>
-        <button type="button" class="btn btn-success" id="router-plan-release">Release (LIVE, available in DEMO)</button>
-        <button type="button" class="btn btn-outline" id="router-reconcile">Reconcile (read-only)</button>
-        <button type="button" class="btn btn-outline" id="router-plan-recover">Prepare Recovery</button>
-        <a class="btn btn-outline" href="/api/device/{{ device.id }}/router-quarantine/recovery">Download recovery/audit snapshot (administrator)</a>
-    </div>
-    <p id="router-action-status" role="status"></p>
-    <pre id="router-plan-preview" style="white-space:pre-wrap; overflow-wrap:anywhere;">No live change prepared.</pre>
-    <button type="button" class="btn btn-danger" id="router-execute" disabled>Confirm planned router change</button>
-</section>
+<!-- Profile Tabs Navigation -->
+<div class="tabs-nav mt-20">
+    <button type="button" class="tab-btn active" id="tab-btn-baseline" onclick="switchDeviceTab('baseline')">
+        <i class="fa-solid fa-chart-pie"></i> Behaviour & Drift
+    </button>
+    <button type="button" class="tab-btn" id="tab-btn-traffic" onclick="switchDeviceTab('traffic')">
+        <i class="fa-solid fa-wave-pulse"></i> Host Traffic ({{ traffic|length }})
+    </button>
+    <button type="button" class="tab-btn" id="tab-btn-quarantine" onclick="switchDeviceTab('quarantine')">
+        <i class="fa-solid fa-ban"></i> Quarantine & Audit Logs ({{ quarantine_logs|length }})
+    </button>
+    <button type="button" class="tab-btn" id="tab-btn-router" onclick="switchDeviceTab('router')">
+        <i class="fa-solid fa-wifi"></i> Hardware Router Control ({{ router_enforcement.state }})
+    </button>
+</div>
 
-<div class="dashboard-grid">
-    <!-- Risk & Drift Summary -->
-    <div class="card">
-        <div class="panel-header">
-            <h3><i class="fa-solid fa-chart-pie"></i> Risk & Behaviour Drift Assessment</h3>
-            <span class="badge {% if device.risk_score >= 70 %}badge-danger{% elif device.risk_score >= 40 %}badge-warning{% else %}badge-success{% endif %}">
-                {{ risk_level }} RISK
-            </span>
-        </div>
-        <div class="score-display">
-            <div class="score-circle {% if device.risk_score >= 70 %}circle-high{% elif device.risk_score >= 40 %}circle-med{% else %}circle-low{% endif %}">
-                <span class="score-number">{{ device.risk_score }}</span>
-                <span class="score-max">/100</span>
+<!-- TAB 1: Behaviour & Drift -->
+<div class="tab-panel active" id="tab-panel-baseline">
+    <div class="dashboard-grid">
+        <!-- Risk & Drift Summary -->
+        <div class="card" style="margin-bottom: 0;">
+            <div class="panel-header">
+                <h3><i class="fa-solid fa-chart-pie text-accent"></i> Risk & Behaviour Drift Assessment</h3>
+                <span class="badge {% if device.risk_score >= 70 %}badge-danger{% elif device.risk_score >= 40 %}badge-warning{% else %}badge-success{% endif %}">
+                    {{ risk_level }} RISK
+                </span>
             </div>
-            <div class="score-explanation">
-                <h4>Overall Risk Assessment</h4>
-                <p>
-                    {% if device.risk_score >= 70 %}
-                    High risk requires administrator review. Automatic quarantine is disabled; check the separate verified router enforcement status.
-                    {% elif device.risk_score >= 40 %}
-                    Suspicious behaviour detected. Flagged on dashboard for administrator review.
-                    {% else %}
-                    No high risk indicators are currently recorded. Capture coverage and baseline quality affect this assessment.
-                    {% endif %}
-                </p>
-                <div class="drift-stat">
-                    <span>Behaviour Drift Score:</span>
-                    <strong class="{% if drift.drift_score >= 50 %}text-danger{% elif drift.drift_score >= 25 %}text-warning{% else %}text-success{% endif %}">
-                        {{ drift.drift_score }}%
-                    </strong>
+            <div class="score-display">
+                <div class="score-circle {% if device.risk_score >= 70 %}circle-high{% elif device.risk_score >= 40 %}circle-med{% else %}circle-low{% endif %}">
+                    <span class="score-number">{{ device.risk_score }}</span>
+                    <span class="score-max">/100</span>
+                </div>
+                <div class="score-explanation">
+                    <h4>Overall Risk Evaluation</h4>
+                    <p class="subtext" style="font-size: 13px; margin-top: 6px;">
+                        {% if device.risk_score >= 70 %}
+                        High risk requires administrator review. Automatic physical quarantine is disabled.
+                        {% elif device.risk_score >= 40 %}
+                        Suspicious behaviour detected. Flagged on dashboard for administrator review.
+                        {% else %}
+                        No high-risk indicators are currently recorded for this device.
+                        {% endif %}
+                    </p>
+                    <div class="drift-stat">
+                        <span>Behaviour Drift Score:</span>
+                        <strong class="{% if drift.drift_score >= 50 %}text-danger{% elif drift.drift_score >= 25 %}text-warning{% else %}text-success{% endif %}">
+                            {{ drift.drift_score }}%
+                        </strong>
+                    </div>
                 </div>
             </div>
+
+            <div class="mt-20" style="border-top: 1px solid var(--border-color); padding-top: 16px;">
+                <h4><i class="fa-solid fa-pen-to-square"></i> Device Management</h4>
+                <p class="subtext">Baseline Source: {{ drift.baseline_source or drift.status }} &bull; {{ drift.message }}</p>
+                <form class="mt-20" onsubmit="event.preventDefault(); renameDevice({{ device.id }}, this.elements.device_name.value);">
+                    <div style="display: flex; gap: 8px;">
+                        <input name="device_name" class="form-input" maxlength="100" required value="{{ device.device_name or '' }}" placeholder="Device friendly name">
+                        <button class="btn btn-outline" type="submit" style="white-space: nowrap;">Save Name</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Behavioural Baseline vs Observed (Proposal Section 8.2) -->
+        <div class="card" style="margin-bottom: 0;">
+            <div class="panel-header">
+                <h3><i class="fa-solid fa-scale-balanced text-accent"></i> Behavioural Baseline Comparison</h3>
+                <span class="badge badge-info">5-minute window</span>
+            </div>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Metric</th>
+                        <th>Baseline</th>
+                        <th>Observed</th>
+                        <th>Drift</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% if drift.breakdown %}
+                    <tr>
+                        <td><strong>DNS Queries</strong></td>
+                        <td>{{ drift.breakdown.dns.normal|int }}</td>
+                        <td>{{ drift.breakdown.dns.observed|int }}</td>
+                        <td>
+                            <span class="badge {{ 'badge-danger' if drift.breakdown.dns.drift_pct > 200 else ('badge-warning' if drift.breakdown.dns.drift_pct > 50 else 'badge-success') }}">
+                                +{{ drift.breakdown.dns.drift_pct }}%
+                            </span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Unique Dest IPs</strong></td>
+                        <td>{{ drift.breakdown.distinct_ips.normal|int }}</td>
+                        <td>{{ drift.breakdown.distinct_ips.observed|int }}</td>
+                        <td>
+                            <span class="badge {{ 'badge-danger' if drift.breakdown.distinct_ips.drift_pct > 200 else ('badge-warning' if drift.breakdown.distinct_ips.drift_pct > 50 else 'badge-success') }}">
+                                +{{ drift.breakdown.distinct_ips.drift_pct }}%
+                            </span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Target Ports</strong></td>
+                        <td>{{ drift.breakdown.ports.normal|int }}</td>
+                        <td>{{ drift.breakdown.ports.observed|int }}</td>
+                        <td>
+                            <span class="badge {{ 'badge-danger' if drift.breakdown.ports.drift_pct > 200 else ('badge-warning' if drift.breakdown.ports.drift_pct > 50 else 'badge-success') }}">
+                                +{{ drift.breakdown.ports.drift_pct }}%
+                            </span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Volume (MB)</strong></td>
+                        <td>{{ drift.breakdown.bandwidth_mb.normal|round(4) }} MB</td>
+                        <td>{{ drift.breakdown.bandwidth_mb.observed }} MB</td>
+                        <td>
+                            <span class="badge {{ 'badge-danger' if drift.breakdown.bandwidth_mb.drift_pct > 200 else ('badge-warning' if drift.breakdown.bandwidth_mb.drift_pct > 50 else 'badge-success') }}">
+                                +{{ drift.breakdown.bandwidth_mb.drift_pct }}%
+                            </span>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="4" class="text-center subtext" style="padding: 30px;">No baseline traffic comparisons available yet. Capture needs to observe ongoing host traffic.</td>
+                    </tr>
+                    {% endif %}
+                </tbody>
+            </table>
         </div>
     </div>
+</div>
 
-    <!-- Behavioural Baseline vs Observed (Proposal Section 8.2) -->
+<!-- TAB 2: Host Traffic Telemetry -->
+<div class="tab-panel" id="tab-panel-traffic">
     <div class="card">
         <div class="panel-header">
-            <h3><i class="fa-solid fa-scale-balanced"></i> Behavioural Baseline Comparison</h3>
-            <span class="badge badge-info">5 minute outbound window</span>
+            <h3><i class="fa-solid fa-list-check text-accent"></i> Recorded Traffic Telemetry Flows</h3>
+            <span class="badge badge-info">{{ traffic|length }} Recorded</span>
         </div>
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Metric</th>
-                    <th>Baseline Normal</th>
-                    <th>Observed Current</th>
-                    <th>Drift</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% if drift.breakdown %}
-                <tr>
-                    <td><strong>DNS Queries / Window</strong></td>
-                    <td>{{ drift.breakdown.dns.normal|int }}</td>
-                    <td>{{ drift.breakdown.dns.observed|int }}</td>
-                    <td>
-                        <span class="badge {{ 'badge-danger' if drift.breakdown.dns.drift_pct > 200 else ('badge-warning' if drift.breakdown.dns.drift_pct > 50 else 'badge-success') }}">
-                            +{{ drift.breakdown.dns.drift_pct }}%
-                        </span>
-                    </td>
-                </tr>
-                <tr>
-                    <td><strong>Distinct Destination IPs</strong></td>
-                    <td>{{ drift.breakdown.distinct_ips.normal|int }}</td>
-                    <td>{{ drift.breakdown.distinct_ips.observed|int }}</td>
-                    <td>
-                        <span class="badge {{ 'badge-danger' if drift.breakdown.distinct_ips.drift_pct > 200 else ('badge-warning' if drift.breakdown.distinct_ips.drift_pct > 50 else 'badge-success') }}">
-                            +{{ drift.breakdown.distinct_ips.drift_pct }}%
-                        </span>
-                    </td>
-                </tr>
-                <tr>
-                    <td><strong>Target Ports Contacted</strong></td>
-                    <td>{{ drift.breakdown.ports.normal|int }}</td>
-                    <td>{{ drift.breakdown.ports.observed|int }}</td>
-                    <td>
-                        <span class="badge {{ 'badge-danger' if drift.breakdown.ports.drift_pct > 200 else ('badge-warning' if drift.breakdown.ports.drift_pct > 50 else 'badge-success') }}">
-                            +{{ drift.breakdown.ports.drift_pct }}%
-                        </span>
-                    </td>
-                </tr>
-                <tr>
-                    <td><strong>Data Volume (MB)</strong></td>
-                    <td>{{ drift.breakdown.bandwidth_mb.normal|round(4) }} MB</td>
-                    <td>{{ drift.breakdown.bandwidth_mb.observed }} MB</td>
-                    <td>
-                        <span class="badge {{ 'badge-danger' if drift.breakdown.bandwidth_mb.drift_pct > 200 else ('badge-warning' if drift.breakdown.bandwidth_mb.drift_pct > 50 else 'badge-success') }}">
-                            +{{ drift.breakdown.bandwidth_mb.drift_pct }}%
-                        </span>
-                    </td>
-                </tr>
-                {% else %}
-                <tr>
-                    <td colspan="4" class="text-center">No baseline traffic comparisons available yet.</td>
-                </tr>
-                {% endif %}
-            </tbody>
-        </table>
+        <div class="table-responsive">
+            <table class="data-table table-sm">
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Destination IP</th>
+                        <th>Protocol</th>
+                        <th>Port</th>
+                        <th>DNS Query</th>
+                        <th>Size (Bytes)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for t in traffic %}
+                    <tr>
+                        <td><small>{{ t.timestamp }}</small></td>
+                        <td><code>{{ t.destination_ip or '-' }}</code></td>
+                        <td><span class="proto-tag proto-{{ t.protocol|lower }}">{{ t.protocol }}</span></td>
+                        <td>{{ t.destination_port or '-' }}</td>
+                        <td><span class="dns-domain">{{ t.dns_query or '-' }}</span></td>
+                        <td>{{ t.packet_size }} B</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="6" class="text-center subtext" style="padding: 30px;">No traffic records observed for this host yet.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 
-<section class="card mt-20">
-    <h3>Device management</h3>
-    <p>Baseline: {{ drift.baseline_source or drift.status }} · {{ drift.message }}</p>
-    <form onsubmit="event.preventDefault(); renameDevice({{ device.id }}, this.elements.device_name.value);">
-        <label>Device name <input name="device_name" maxlength="100" required value="{{ device.device_name or '' }}"></label>
-        <button class="btn btn-outline" type="submit">Save name</button>
-    </form>
-    <h3>Quarantine audit history</h3>
-    <p>DEMO quarantine changes the management marker only. It does not isolate a device from the network.</p>
-    <table class="data-table"><thead><tr><th>Time</th><th>Action</th><th>Actor</th><th>Reason</th></tr></thead><tbody>
-    {% for entry in quarantine_logs %}<tr><td>{{ entry.timestamp }}</td><td>{{ entry.action }}</td><td>{{ entry.performed_by }}</td><td>{{ entry.reason }}</td></tr>
-    {% else %}<tr><td colspan="4">No quarantine actions recorded.</td></tr>{% endfor %}
-    </tbody></table>
-</section>
-<!-- Device Traffic History -->
-<div class="card mt-20">
-    <div class="panel-header">
-        <h3><i class="fa-solid fa-list-check"></i> Host Traffic History</h3>
-        <span class="badge badge-info">{{ traffic|length }} Flows Recorded</span>
-    </div>
-    <div class="table-responsive">
-        <table class="data-table table-sm">
-            <thead>
-                <tr>
-                    <th>Timestamp</th>
-                    <th>Destination IP</th>
-                    <th>Protocol</th>
-                    <th>Port</th>
-                    <th>DNS Query</th>
-                    <th>Size (Bytes)</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for t in traffic %}
-                <tr>
-                    <td><small>{{ t.timestamp }}</small></td>
-                    <td><code>{{ t.destination_ip or '-' }}</code></td>
-                    <td><span class="proto-tag proto-{{ t.protocol|lower }}">{{ t.protocol }}</span></td>
-                    <td>{{ t.destination_port or '-' }}</td>
-                    <td>{{ t.dns_query or '-' }}</td>
-                    <td>{{ t.packet_size }} B</td>
-                </tr>
-                {% else %}
-                <tr>
-                    <td colspan="6" class="text-center">No traffic recorded for this host yet.</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+<!-- TAB 3: Quarantine & Containment Logs -->
+<div class="tab-panel" id="tab-panel-quarantine">
+    <div class="card">
+        <div class="panel-header">
+            <h3><i class="fa-solid fa-ban text-accent"></i> Quarantine Containment Audit Log</h3>
+            <span class="badge badge-secondary">{{ quarantine_logs|length }} Events</span>
+        </div>
+        <p class="subtext" style="margin-bottom: 16px;">
+            DEMO quarantine modifies the security management marker and informs the dashboard without applying physical firewall/switch changes.
+        </p>
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Action</th>
+                        <th>Actor</th>
+                        <th>Reason</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for entry in quarantine_logs %}
+                    <tr>
+                        <td>{{ entry.timestamp }}</td>
+                        <td>
+                            <span class="badge {{ 'badge-danger' if entry.action == 'quarantined' else 'badge-success' }}">
+                                {{ entry.action|upper }}
+                            </span>
+                        </td>
+                        <td>{{ entry.performed_by }}</td>
+                        <td>{{ entry.reason }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="4" class="text-center subtext" style="padding: 30px;">No quarantine actions recorded for this device.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
+
+<!-- TAB 4: Hardware Router Enforcement (Huawei) -->
+<div class="tab-panel" id="tab-panel-router">
+    <section class="card" id="router-enforcement" data-device-id="{{ device.id }}" data-device-mac="{{ device.mac_address or '' }}">
+        <div class="panel-header">
+            <h3><i class="fa-solid fa-wifi text-accent"></i> LIVE Router Enforcement & WLAN MAC Filtering</h3>
+            <span class="badge badge-warning" id="router-enforcement-state">{{ router_enforcement.state }}</span>
+        </div>
+        <p id="router-enforcement-message" class="subtext">{{ router_enforcement.message }}</p>
+        <p id="router-verification" class="subtext">{% if router_enforcement.verified_at %}Last verified: {{ router_enforcement.verified_at }}{% else %}No router enforcement verified.{% endif %}</p>
+        <p class="subtext">ACTIVE indicates deny-list entries in the selected SSID scope were read back successfully. Rules are verified through readback against the Huawei API.</p>
+
+        <fieldset style="border: 1px solid var(--border-color); border-radius: 8px; padding: 14px; margin: 16px 0;">
+            <legend style="padding: 0 8px; font-size: 12px; color: var(--text-secondary); font-weight: 600;">SSID Filter Scope for New Quarantine</legend>
+            <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+                {% for i in range(4) %}
+                <label style="font-size: 13px; display: inline-flex; align-items: center; gap: 6px;">
+                    <input type="checkbox" name="router-ssid" value="{{ i }}" {% if i == 0 %}checked{% endif %}>
+                    SSID Index {{ i }}
+                </label>
+                {% endfor %}
+            </div>
+        </fieldset>
+
+        <div style="margin-bottom: 16px;">
+            <label style="font-size: 13px; display: inline-flex; align-items: center; gap: 8px;">
+                <input type="checkbox" id="router-allow-enable">
+                I explicitly approve enabling deny-list filtering on selected currently disabled, empty lists. Existing whitelist modes will be refused.
+            </label>
+        </div>
+
+        <details id="router-identity-details" class="card" style="background: var(--bg-primary); margin-bottom: 16px;">
+            <summary style="font-weight: 600; cursor: pointer; color: var(--accent-cyan);">Verify Current Wi-Fi Identity (Private / Randomized MAC)</summary>
+            <div style="margin-top: 12px; font-size: 13px; color: var(--text-secondary);">
+                <p>On the target phone, open Settings &rarr; Wi-Fi &rarr; Network Details to read its active MAC and IP address, then enter them below to bind identity.</p>
+                <form id="router-identity-form" class="mt-20">
+                    <p style="margin-bottom: 10px;"><label>MAC read from device: <input name="mac" class="form-input" style="display:inline-block; width: 220px;" required maxlength="17" pattern="[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}" placeholder="00:11:22:33:44:55"></label></p>
+                    <p style="margin-bottom: 10px;"><label>IP read from device: <input name="ip" class="form-input" style="display:inline-block; width: 220px;" required maxlength="15" placeholder="192.168.x.x"></label></p>
+                    <p style="margin-bottom: 6px;"><label><input type="checkbox" name="stable_mac_confirmed" required> I confirmed this MAC remains fixed for this network.</label></p>
+                    <p style="margin-bottom: 12px;"><label><input type="checkbox" name="non_management" required> This is not the NetGuardian desktop, gateway or management host.</label></p>
+                    <button type="submit" class="btn btn-sm btn-outline" id="router-identity-submit" disabled>Verify Identity (Read-only Check)</button>
+                </form>
+                <p id="router-identity-status" class="subtext mt-20" role="status">Verification is scoped to this device and session for up to 15 minutes.</p>
+            </div>
+        </details>
+
+        <div class="action-buttons" style="flex-wrap: wrap;">
+            <button type="button" class="btn btn-danger" id="router-plan-block">Quarantine (LIVE): Prepare Plan</button>
+            <button type="button" class="btn btn-success" id="router-plan-release">Release (LIVE, Available in DEMO)</button>
+            <button type="button" class="btn btn-outline" id="router-reconcile">Reconcile (Read-only)</button>
+            <button type="button" class="btn btn-outline" id="router-plan-recover">Prepare Recovery</button>
+            <a class="btn btn-outline" href="/api/device/{{ device.id }}/router-quarantine/recovery">Download Audit Snapshot</a>
+        </div>
+        <p id="router-action-status" class="subtext mt-20" role="status"></p>
+        <pre id="router-plan-preview" class="mono mt-20" style="white-space:pre-wrap; overflow-wrap:anywhere; padding: 12px; background: var(--bg-primary); border-radius: 6px; border: 1px solid var(--border-color);">No live change prepared.</pre>
+        <button type="button" class="btn btn-danger mt-20" id="router-execute" disabled>Confirm Planned Router Change</button>
+    </section>
+</div>
+
+<script>
+function switchDeviceTab(tabName) {
+    document.querySelectorAll(".tab-btn").forEach(btn => btn.classList.remove("active"));
+    document.querySelectorAll(".tab-panel").forEach(panel => panel.classList.remove("active"));
+    const activeBtn = document.getElementById(`tab-btn-${tabName}`);
+    const activePanel = document.getElementById(`tab-panel-${tabName}`);
+    if (activeBtn) activeBtn.classList.add("active");
+    if (activePanel) activePanel.classList.add("active");
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    if (location.hash === "#router-enforcement") {
+        switchDeviceTab("router");
+    }
+});
+</script>
 {% endblock %}

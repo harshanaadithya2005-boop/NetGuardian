@@ -199,7 +199,10 @@
                     </div>
                 </div>
                 {% if alert.status == 'open' %}
-                <button class="btn btn-sm btn-resolve" onclick="resolveAlert({{ alert.id }})">
+                <button type="button" class="btn btn-sm btn-outline" onclick="openAiExplainModal({{ alert.id }})" title="AI Incident Investigation">
+                    <i class="fa-solid fa-brain text-accent"></i>
+                </button>
+                <button class="btn btn-sm btn-resolve" onclick="resolveAlert({{ alert.id }})" title="Resolve Alert">
                     <i class="fa-solid fa-check"></i>
                 </button>
                 {% endif %}
@@ -367,7 +370,7 @@
                </button>`
             : `<button class="btn btn-sm btn-danger"
                        onclick="toggleQuarantine(${id}, 'quarantine')">
-                   <i class="fa-solid fa-lock"></i> {{ "Review LIVE Quarantine" if protection_mode == "LIVE" else "Quarantine (DEMO)" }}
+                   <i class="fa-solid fa-lock"></i> ${document.body.dataset.protectionMode === "LIVE" ? "Review LIVE Quarantine" : "Quarantine (DEMO)"}
                </button>`;
 
         return `
@@ -400,7 +403,7 @@
     }
 
     async function refreshDeviceTable() {
-        if (refreshing || document.hidden) {
+        if (refreshing || document.hidden || (typeof isLiveFeedPaused === "function" && isLiveFeedPaused())) {
             return;
         }
 
@@ -505,7 +508,7 @@
     let updating = false;
 
     async function refreshDashboardStats() {
-        if (updating || document.hidden) {
+        if (updating || document.hidden || (typeof isLiveFeedPaused === "function" && isLiveFeedPaused())) {
             return;
         }
 

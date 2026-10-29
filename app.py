@@ -678,6 +678,48 @@ def export_alerts_csv():
     )
 
 
+@app.route("/reports/devices.csv")
+def export_devices_csv():
+    devices = get_verified_local_devices()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Device ID",
+        "Device Name",
+        "Hostname",
+        "IP Address",
+        "MAC Address",
+        "Device Type",
+        "Status",
+        "Trusted",
+        "Risk Score",
+        "First Seen",
+        "Last Seen"
+    ])
+    for d in devices:
+        writer.writerow([
+            d["id"],
+            d["device_name"] or "",
+            d["hostname"] or "",
+            d["ip_address"] or "",
+            d["mac_address"] or "",
+            d["device_type"] or "",
+            d["status"] or "",
+            "Yes" if d["trusted"] else "No",
+            d["risk_score"] or 0,
+            d["first_seen"] or "",
+            d["last_seen"] or ""
+        ])
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={
+            "Content-Disposition":
+                "attachment; filename=netguardian_devices.csv"
+        }
+    )
+
+
 @app.route("/reports/report.pdf")
 def export_security_pdf():
     """Create a PDF security report in memory."""
