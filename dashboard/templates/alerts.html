@@ -105,10 +105,11 @@
                     <td>
                         <div style="display: inline-flex; align-items: center; gap: 6px;">
                             <select class="form-input" style="padding: 4px 8px; font-size: 12px; width: auto;"
-                                    onchange="changeAlertStatus({{ a['id'] }}, this.value)"
+                                    data-alert-id="{{ a['id'] }}"
+                                    onchange="changeAlertStatus(this.dataset.alertId, this.value)"
                                     aria-label="Status for alert {{ a['id'] }}">
                                 {% for s in ['open', 'resolved', 'ignored'] %}
-                                <option value="{{ s }}" {% if a['status'] == s %}selected{% endif %}>
+                                <option value="{{ s }}" {{ 'selected' if a['status'] == s else '' }}>
                                     {{ s|title }}
                                 </option>
                                 {% endfor %}
@@ -120,7 +121,7 @@
                     </td>
                     <td>
                         <div class="action-buttons">
-                            <button type="button" class="btn btn-sm btn-outline" onclick="openAiExplainModal({{ a['id'] }})" title="Open AI Investigation Modal">
+                            <button type="button" class="btn btn-sm btn-outline" data-alert-id="{{ a['id'] }}" onclick="openAiExplainModal(this.dataset.alertId)" title="Open AI Investigation Modal">
                                 <i class="fa-solid fa-brain text-accent"></i> AI Explain
                             </button>
                             <a href="/alerts/{{ a['id'] }}/explain" class="btn btn-sm btn-outline" title="Open detailed report in new page">

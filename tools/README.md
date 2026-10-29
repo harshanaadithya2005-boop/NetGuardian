@@ -39,3 +39,4 @@ Cleans up temporary or synthetic test devices created during testing sessions.
 ```powershell
 python tools/delete_test_device.py
 ```
+

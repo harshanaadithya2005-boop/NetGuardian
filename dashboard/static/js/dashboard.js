@@ -249,7 +249,7 @@ async function toggleTrust(deviceId, trusted) {
                     "Content-Type": "application/json"
                 },
                 body: JSON.stringify({
-                    trusted: Boolean(trusted)
+                    trusted: Boolean(Number(trusted))
                 })
             }
         );

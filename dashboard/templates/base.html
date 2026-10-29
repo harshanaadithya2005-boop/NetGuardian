@@ -24,25 +24,25 @@
         </button>
 
         <nav class="main-navigation" id="main-navigation" aria-label="Main navigation">
-            <a href="/" class="nav-link {% if request.path == '/' %}active{% endif %}">
+            <a href="/" class="nav-link {{ 'active' if request.path == '/' else '' }}">
                 <i class="fa-solid fa-gauge-high"></i> <span>Dashboard</span>
             </a>
-            <a href="/devices" class="nav-link {% if request.path.startswith('/device') %}active{% endif %}">
+            <a href="/devices" class="nav-link {{ 'active' if request.path.startswith('/device') else '' }}">
                 <i class="fa-solid fa-server"></i> <span>Devices</span>
             </a>
-            <a href="/alerts" class="nav-link {% if request.path.startswith('/alerts') %}active{% endif %}">
+            <a href="/alerts" class="nav-link {{ 'active' if request.path.startswith('/alerts') else '' }}">
                 <i class="fa-solid fa-bell"></i> <span>Alerts</span>
             </a>
-            <a href="/analytics" class="nav-link {% if request.path == '/analytics' %}active{% endif %}">
+            <a href="/analytics" class="nav-link {{ 'active' if request.path == '/analytics' else '' }}">
                 <i class="fa-solid fa-chart-line"></i> <span>Analytics</span>
             </a>
-            <a href="/reports" class="nav-link {% if request.path.startswith('/reports') %}active{% endif %}">
+            <a href="/reports" class="nav-link {{ 'active' if request.path.startswith('/reports') else '' }}">
                 <i class="fa-solid fa-file-shield"></i> <span>Reports</span>
             </a>
-            <a href="/threat-detection" class="nav-link {% if request.path == '/threat-detection' %}active{% endif %}">
+            <a href="/threat-detection" class="nav-link {{ 'active' if request.path == '/threat-detection' else '' }}">
                 <i class="fa-solid fa-shield-virus"></i> <span>Threat Detection</span>
             </a>
-            <a href="/viva-lab" class="nav-link {% if request.path == '/viva-lab' %}active{% endif %}">
+            <a href="/viva-lab" class="nav-link {{ 'active' if request.path == '/viva-lab' else '' }}">
                 <i class="fa-solid fa-flask-vial"></i> <span>Viva Lab</span>
             </a>
         </nav>

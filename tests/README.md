@@ -31,3 +31,4 @@ python -m unittest tests/test_security_pipeline.py -v
 | `test_stable_restore.py` | Database schema restore, backup rotation, and migration safety | 3 |
 | `test_wifi_identity.py` | Wi-Fi identity verification, client rotation, and anti-spoofing | 9 |
 | **Total** | | **119 Tests** |
+

@@ -1,4 +1,4 @@
-<section class="card mt-20" id="security-pipeline" {% if device is defined %}data-device-id="{{ device.id }}"{% endif %}>
+<section class="card mt-20" id="security-pipeline" data-device-id="{{ device.id if device is defined else '' }}">
     <h3>Real-Time Threat Detection and Response</h3>
     <p>Recorded packet evidence · Risk is advisory · Physical automatic enforcement is unavailable</p>
     <p id="security-health" role="status">Loading evidence...</p>

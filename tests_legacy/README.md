@@ -56,3 +56,4 @@ python tools/run_tests.py
 | `test_updated_port_scan.py` | Validates horizontal and vertical port scan detection thresholds |
 | `test_window_eligibility.py` | Tests time-window eligibility criteria for drift evaluation |
 | `test_worker_health.py` | Verifies monitoring worker health states and watchdog checks |
+

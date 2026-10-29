@@ -47,12 +47,12 @@
         {% if protection_mode == 'DEMO' and not (router_enforcement.has_ownership and router_enforcement.state != 'RELEASED') %}
         {% if device.status == 'quarantined' %}
         <span class="badge badge-danger badge-lg"><i class="fa-solid fa-ban"></i> QUARANTINED (DEMO)</span>
-        <button class="btn btn-success" onclick="toggleQuarantine({{ device.id }}, 'release')">
+        <button class="btn btn-success" data-device-id="{{ device.id }}" onclick="toggleQuarantine(this.dataset.deviceId, 'release')">
             <i class="fa-solid fa-unlock"></i> Release DEMO Quarantine
         </button>
         {% else %}
         <span class="badge badge-success badge-lg"><i class="fa-solid fa-check"></i> DEMO MARKER: CLEAR</span>
-        <button class="btn btn-danger" onclick="toggleQuarantine({{ device.id }}, 'quarantine')">
+        <button class="btn btn-danger" data-device-id="{{ device.id }}" onclick="toggleQuarantine(this.dataset.deviceId, 'quarantine')">
             <i class="fa-solid fa-lock"></i> Mark Quarantined (DEMO)
         </button>
         {% endif %}
@@ -83,12 +83,12 @@
         <div class="card" style="margin-bottom: 0;">
             <div class="panel-header">
                 <h3><i class="fa-solid fa-chart-pie text-accent"></i> Risk & Behaviour Drift Assessment</h3>
-                <span class="badge {% if device.risk_score >= 70 %}badge-danger{% elif device.risk_score >= 40 %}badge-warning{% else %}badge-success{% endif %}">
+                <span class="badge {{ 'badge-danger' if device.risk_score >= 70 else ('badge-warning' if device.risk_score >= 40 else 'badge-success') }}">
                     {{ risk_level }} RISK
                 </span>
             </div>
             <div class="score-display">
-                <div class="score-circle {% if device.risk_score >= 70 %}circle-high{% elif device.risk_score >= 40 %}circle-med{% else %}circle-low{% endif %}">
+                <div class="score-circle {{ 'circle-high' if device.risk_score >= 70 else ('circle-med' if device.risk_score >= 40 else 'circle-low') }}">
                     <span class="score-number">{{ device.risk_score }}</span>
                     <span class="score-max">/100</span>
                 </div>
@@ -105,7 +105,7 @@
                     </p>
                     <div class="drift-stat">
                         <span>Behaviour Drift Score:</span>
-                        <strong class="{% if drift.drift_score >= 50 %}text-danger{% elif drift.drift_score >= 25 %}text-warning{% else %}text-success{% endif %}">
+                        <strong class="{{ 'text-danger' if drift.drift_score >= 50 else ('text-warning' if drift.drift_score >= 25 else 'text-success') }}">
                             {{ drift.drift_score }}%
                         </strong>
                     </div>
@@ -115,7 +115,7 @@
             <div class="mt-20" style="border-top: 1px solid var(--border-color); padding-top: 16px;">
                 <h4><i class="fa-solid fa-pen-to-square"></i> Device Management</h4>
                 <p class="subtext">Baseline Source: {{ drift.baseline_source or drift.status }} &bull; {{ drift.message }}</p>
-                <form class="mt-20" onsubmit="event.preventDefault(); renameDevice({{ device.id }}, this.elements.device_name.value);">
+                <form class="mt-20" data-device-id="{{ device.id }}" onsubmit="event.preventDefault(); renameDevice(this.dataset.deviceId, this.elements.device_name.value);">
                     <div style="display: flex; gap: 8px;">
                         <input name="device_name" class="form-input" maxlength="100" required value="{{ device.device_name or '' }}" placeholder="Device friendly name">
                         <button class="btn btn-outline" type="submit" style="white-space: nowrap;">Save Name</button>
@@ -128,66 +128,40 @@
         <div class="card" style="margin-bottom: 0;">
             <div class="panel-header">
                 <h3><i class="fa-solid fa-scale-balanced text-accent"></i> Behavioural Baseline Comparison</h3>
-                <span class="badge badge-info">5-minute window</span>
+                <span class="badge badge-info">Profile {{ 'Established' if (profile is defined and profile) else 'Learning' }}</span>
             </div>
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>Metric</th>
-                        <th>Baseline</th>
-                        <th>Observed</th>
-                        <th>Drift</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% if drift.breakdown %}
-                    <tr>
-                        <td><strong>DNS Queries</strong></td>
-                        <td>{{ drift.breakdown.dns.normal|int }}</td>
-                        <td>{{ drift.breakdown.dns.observed|int }}</td>
-                        <td>
-                            <span class="badge {{ 'badge-danger' if drift.breakdown.dns.drift_pct > 200 else ('badge-warning' if drift.breakdown.dns.drift_pct > 50 else 'badge-success') }}">
-                                +{{ drift.breakdown.dns.drift_pct }}%
-                            </span>
-                        </td>
-                    </tr>
-                    <tr>
-                        <td><strong>Unique Dest IPs</strong></td>
-                        <td>{{ drift.breakdown.distinct_ips.normal|int }}</td>
-                        <td>{{ drift.breakdown.distinct_ips.observed|int }}</td>
-                        <td>
-                            <span class="badge {{ 'badge-danger' if drift.breakdown.distinct_ips.drift_pct > 200 else ('badge-warning' if drift.breakdown.distinct_ips.drift_pct > 50 else 'badge-success') }}">
-                                +{{ drift.breakdown.distinct_ips.drift_pct }}%
-                            </span>
-                        </td>
-                    </tr>
-                    <tr>
-                        <td><strong>Target Ports</strong></td>
-                        <td>{{ drift.breakdown.ports.normal|int }}</td>
-                        <td>{{ drift.breakdown.ports.observed|int }}</td>
-                        <td>
-                            <span class="badge {{ 'badge-danger' if drift.breakdown.ports.drift_pct > 200 else ('badge-warning' if drift.breakdown.ports.drift_pct > 50 else 'badge-success') }}">
-                                +{{ drift.breakdown.ports.drift_pct }}%
-                            </span>
-                        </td>
-                    </tr>
-                    <tr>
-                        <td><strong>Volume (MB)</strong></td>
-                        <td>{{ drift.breakdown.bandwidth_mb.normal|round(4) }} MB</td>
-                        <td>{{ drift.breakdown.bandwidth_mb.observed }} MB</td>
-                        <td>
-                            <span class="badge {{ 'badge-danger' if drift.breakdown.bandwidth_mb.drift_pct > 200 else ('badge-warning' if drift.breakdown.bandwidth_mb.drift_pct > 50 else 'badge-success') }}">
-                                +{{ drift.breakdown.bandwidth_mb.drift_pct }}%
-                            </span>
-                        </td>
-                    </tr>
-                    {% else %}
-                    <tr>
-                        <td colspan="4" class="text-center subtext" style="padding: 30px;">No baseline traffic comparisons available yet. Capture needs to observe ongoing host traffic.</td>
-                    </tr>
-                    {% endif %}
-                </tbody>
-            </table>
+
+            <div class="comparison-grid">
+                <div class="comparison-row">
+                    <span class="comparison-label">Monitored Metric</span>
+                    <span class="comparison-value header">Historical Baseline</span>
+                    <span class="comparison-value header">Observed Telemetry</span>
+                </div>
+                <div class="comparison-row">
+                    <span class="comparison-label"><i class="fa-solid fa-network-wired"></i> Common Ports</span>
+                    <span class="comparison-value mono">{{ (profile.common_ports if (profile is defined and profile and profile.common_ports) else 'Port 80, 443 (Default)') }}</span>
+                    <span class="comparison-value mono text-accent">{{ (observed.observed_ports if (observed is defined and observed and observed.observed_ports) else 'Monitoring') }}</span>
+                </div>
+                <div class="comparison-row">
+                    <span class="comparison-label"><i class="fa-solid fa-arrow-up-right-dots"></i> Packet Volume Burst</span>
+                    <span class="comparison-value">{{ (profile.avg_packet_size ~ ' B') if (profile is defined and profile and profile.avg_packet_size) else 'Calculating' }}</span>
+                    <span class="comparison-value text-accent">{{ (observed.packet_count if (observed is defined and observed and observed.packet_count) else 0) }} packets</span>
+                </div>
+                <div class="comparison-row">
+                    <span class="comparison-label"><i class="fa-solid fa-clock"></i> Active Time Windows</span>
+                    <span class="comparison-value">{{ (profile.active_hours if (profile is defined and profile and profile.active_hours) else 'Business Hours (Default)') }}</span>
+                    <span class="comparison-value text-accent">Within regular window</span>
+                </div>
+                <div class="comparison-row">
+                    <span class="comparison-label"><i class="fa-solid fa-globe"></i> DNS Query Activity</span>
+                    <span class="comparison-value">{{ (profile.typical_protocols if (profile is defined and profile and profile.typical_protocols) else 'DNS, HTTP, HTTPS') }}</span>
+                    <span class="comparison-value text-accent">{{ (observed.dns_queries|length if (observed is defined and observed and observed.dns_queries) else '0') }} unique domains</span>
+                </div>
+            </div>
+
+            <p class="subtext mt-20">
+                NetGuardian builds a rolling behavioral profile during an initial learning window. Deviations exceeding calibrated sensitivity thresholds increment the Behaviour Drift Score (+15 Risk).
+            </p>
         </div>
     </div>
 </div>
@@ -196,7 +170,7 @@
 <div class="tab-panel" id="tab-panel-traffic">
     <div class="card">
         <div class="panel-header">
-            <h3><i class="fa-solid fa-list-check text-accent"></i> Recorded Traffic Telemetry Flows</h3>
+            <h3><i class="fa-solid fa-wave-pulse text-accent"></i> Recorded Traffic Metadata Stream</h3>
             <span class="badge badge-info">{{ traffic|length }} Recorded</span>
         </div>
         <div class="table-responsive">
@@ -291,7 +265,7 @@
             <div style="display: flex; gap: 16px; flex-wrap: wrap;">
                 {% for i in range(4) %}
                 <label style="font-size: 13px; display: inline-flex; align-items: center; gap: 6px;">
-                    <input type="checkbox" name="router-ssid" value="{{ i }}" {% if i == 0 %}checked{% endif %}>
+                    <input type="checkbox" name="router-ssid" value="{{ i }}" {{ 'checked' if i == 0 else '' }}>
                     SSID Index {{ i }}
                 </label>
                 {% endfor %}

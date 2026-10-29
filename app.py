@@ -26,7 +26,8 @@ if (
     and Path(sys.executable).resolve() != venv_python.resolve()
 ):
     try:
-        import flask, scapy, requests, dotenv, reportlab
+        for _pkg in ("flask", "scapy", "requests", "dotenv", "reportlab"):
+            __import__(_pkg)
     except ImportError:
         import subprocess
         proc = subprocess.run(
@@ -39,7 +40,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from router.huawei_client import HuaweiRouterClient
-from router.router_sync import sync_connected_wifi_devices
+# router sync imported in monitor_wifi_devices
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
@@ -392,9 +393,9 @@ def update_alert_status(alert_id):
     allowed_statuses = {"open", "resolved", "ignored"}
     json_data = request.get_json(silent=True) or {}
     new_status = (request.form.get("status") or json_data.get("status") or "").strip().lower()
-    new_status = request.form.get(
-        "status", ""
-    ).strip().lower()
+    # validate status
+    # parsed from form or json
+    pass
 
     if new_status not in allowed_statuses:
         return "Invalid alert status", 400
@@ -474,7 +475,7 @@ def reset_alerts():
         conn.close()
 
     if request.is_json or request.headers.get("Accept") == "application/json" or request.headers.get("X-Requested-With") == "XMLHttpRequest":
-        return jsonify(status="success", message=f"Alert {alert_id} status updated to {new_status}.")
+        return jsonify(status="success", message="All alerts archived successfully.")
     return redirect("/alerts")
 
 

@@ -108,7 +108,9 @@
                     </td>
                     <td>
                         <button class="btn btn-sm {{ 'btn-trusted' if d.trusted else 'btn-untrusted' }}"
-                                onclick="handleToggleTrust({{ d.id }}, {{ 0 if d.trusted else 1 }})">
+                                data-device-id="{{ d.id }}"
+                                data-trust-target="{{ 0 if d.trusted else 1 }}"
+                                onclick="handleToggleTrust(this.dataset.deviceId, this.dataset.trustTarget)">
                             <i class="fa-solid {{ 'fa-shield-check' if d.trusted else 'fa-shield-xmark' }}"></i>
                             {{ 'Trusted' if d.trusted else 'Untrusted' }}
                         </button>
@@ -119,15 +121,19 @@
                             <a href="/device/{{ d.id }}" class="btn btn-sm btn-outline" title="View behavioural profile">
                                 <i class="fa-solid fa-chart-pie"></i>
                             </a>
-                            <button class="btn btn-sm btn-outline" onclick="promptRenameDevice({{ d.id }}, '{{ d.device_name or '' }}')" title="Rename device">
+                            <button class="btn btn-sm btn-outline"
+                                    data-device-id="{{ d.id }}"
+                                    data-device-name="{{ d.device_name or '' }}"
+                                    onclick="promptRenameDevice(this.dataset.deviceId, this.dataset.deviceName)"
+                                    title="Rename device">
                                 <i class="fa-solid fa-pen-to-square"></i>
                             </button>
                             {% if d.status == 'quarantined' %}
-                            <button class="btn btn-sm btn-success" onclick="toggleQuarantine({{ d.id }}, 'release')" title="Release quarantine">
+                            <button class="btn btn-sm btn-success" data-device-id="{{ d.id }}" onclick="toggleQuarantine(this.dataset.deviceId, 'release')" title="Release quarantine">
                                 <i class="fa-solid fa-unlock"></i>
                             </button>
                             {% else %}
-                            <button class="btn btn-sm btn-danger" onclick="toggleQuarantine({{ d.id }}, 'quarantine')" title="Quarantine device">
+                            <button class="btn btn-sm btn-danger" data-device-id="{{ d.id }}" onclick="toggleQuarantine(this.dataset.deviceId, 'quarantine')" title="Quarantine device">
                                 <i class="fa-solid fa-lock"></i>
                             </button>
                             {% endif %}
@@ -199,18 +205,20 @@ function sortTable(column) {
         currentSort.column = column;
         currentSort.direction = "asc";
     }
-    // Update icons
+    updateSortIcons();
+    renderFilteredDevices();
+}
+
+function updateSortIcons() {
     ["name", "ip", "status", "risk", "last_seen"].forEach(col => {
         const icon = document.getElementById(`sort-${col}`);
-        if (icon) {
-            if (col === currentSort.column) {
-                icon.className = `fa-solid fa-sort-${currentSort.direction === 'asc' ? 'up' : 'down'}`;
-            } else {
-                icon.className = "fa-solid fa-sort";
-            }
+        if (!icon) return;
+        if (currentSort.column === col) {
+            icon.className = currentSort.direction === "asc" ? "fa-solid fa-sort-up text-accent" : "fa-solid fa-sort-down text-accent";
+        } else {
+            icon.className = "fa-solid fa-sort";
         }
     });
-    renderFilteredDevices();
 }
 
 function renderFilteredDevices() {
@@ -218,40 +226,37 @@ function renderFilteredDevices() {
     if (!tbody || !currentDevices.length) return;
 
     let filtered = currentDevices.filter(d => {
-        // Status filter
         if (currentFilter.status !== "all" && d.status !== currentFilter.status) return false;
-        // Trust filter
         if (currentFilter.trust === "trusted" && !d.trusted) return false;
         if (currentFilter.trust === "untrusted" && d.trusted) return false;
-        // Search query
         if (currentFilter.search) {
-            const q = currentFilter.search;
+            const query = currentFilter.search;
             const name = (d.device_name || "").toLowerCase();
             const host = (d.hostname || "").toLowerCase();
             const ip = (d.ip_address || "").toLowerCase();
             const mac = (d.mac_address || "").toLowerCase();
-            if (!name.includes(q) && !host.includes(q) && !ip.includes(q) && !mac.includes(q)) return false;
+            if (!name.includes(query) && !host.includes(query) && !ip.includes(query) && !mac.includes(query)) {
+                return false;
+            }
         }
         return true;
     });
 
-    // Sorting
     filtered.sort((a, b) => {
         let valA, valB;
         if (currentSort.column === "name") {
             valA = getDisplayName(a).toLowerCase();
             valB = getDisplayName(b).toLowerCase();
         } else if (currentSort.column === "ip") {
-            valA = String(a.ip_address || "");
-            valB = String(b.ip_address || "");
-            return currentSort.direction === "asc" ? valA.localeCompare(valB, undefined, { numeric: true }) : valB.localeCompare(valA, undefined, { numeric: true });
-        } else if (currentSort.column === "risk") {
-            valA = Number(a.risk_score || 0);
-            valB = Number(b.risk_score || 0);
+            valA = (a.ip_address || "").split(".").map(n => ("000" + n).slice(-3)).join("");
+            valB = (b.ip_address || "").split(".").map(n => ("000" + n).slice(-3)).join("");
         } else if (currentSort.column === "status") {
             valA = a.status || "";
             valB = b.status || "";
-        } else {
+        } else if (currentSort.column === "risk") {
+            valA = Number(a.risk_score) || 0;
+            valB = Number(b.risk_score) || 0;
+        } else if (currentSort.column === "last_seen") {
             valA = a.last_seen || "";
             valB = b.last_seen || "";
         }
@@ -260,13 +265,20 @@ function renderFilteredDevices() {
         return 0;
     });
 
-    if (!filtered.length) {
-        tbody.innerHTML = `<tr><td colspan="9" class="empty-state"><i class="fa-solid fa-filter-circle-xmark empty-icon"></i><p>No devices match current filters.</p></td></tr>`;
+    if (filtered.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="9" class="empty-state">
+                    <i class="fa-solid fa-filter-circle-xmark empty-icon"></i>
+                    <p>No devices match current search and filter criteria.</p>
+                </td>
+            </tr>
+        `;
         return;
     }
 
     tbody.innerHTML = filtered.map(d => {
-        const id = Number(d.id);
+        const id = d.id;
         const trusted = Boolean(d.trusted);
         const name = getDisplayName(d);
         const iconClass = getDeviceIcon(d.device_type);
@@ -282,8 +294,8 @@ function renderFilteredDevices() {
 
         const isQuarantined = d.status === 'quarantined';
         const quarantineBtn = isQuarantined
-            ? `<button class="btn btn-sm btn-success" onclick="toggleQuarantine(${id}, 'release')" title="Release quarantine"><i class="fa-solid fa-unlock"></i></button>`
-            : `<button class="btn btn-sm btn-danger" onclick="toggleQuarantine(${id}, 'quarantine')" title="Quarantine device"><i class="fa-solid fa-lock"></i></button>`;
+            ? `<button class="btn btn-sm btn-success" data-device-id="${id}" onclick="toggleQuarantine(this.dataset.deviceId, 'release')" title="Release quarantine"><i class="fa-solid fa-unlock"></i></button>`
+            : `<button class="btn btn-sm btn-danger" data-device-id="${id}" onclick="toggleQuarantine(this.dataset.deviceId, 'quarantine')" title="Quarantine device"><i class="fa-solid fa-lock"></i></button>`;
 
         return `
             <tr id="dev-row-${id}" class="${isQuarantined ? 'row-quarantined' : ''}">
@@ -308,7 +320,7 @@ function renderFilteredDevices() {
                     <span class="risk-number ${riskColor}">${risk}/100</span>
                 </td>
                 <td>
-                    <button class="btn btn-sm ${trusted ? 'btn-trusted' : 'btn-untrusted'}" onclick="handleToggleTrust(${id}, ${trusted ? 0 : 1})">
+                    <button class="btn btn-sm ${trusted ? 'btn-trusted' : 'btn-untrusted'}" data-device-id="${id}" data-trust-target="${trusted ? 0 : 1}" onclick="handleToggleTrust(this.dataset.deviceId, this.dataset.trustTarget)">
                         <i class="fa-solid ${trusted ? 'fa-shield-check' : 'fa-shield-xmark'}"></i>
                         ${trusted ? 'Trusted' : 'Untrusted'}
                     </button>
@@ -317,7 +329,7 @@ function renderFilteredDevices() {
                 <td>
                     <div class="action-buttons">
                         <a href="/device/${id}" class="btn btn-sm btn-outline" title="View profile"><i class="fa-solid fa-chart-pie"></i></a>
-                        <button class="btn btn-sm btn-outline" onclick="promptRenameDevice(${id}, '${escapeHtml(d.device_name || '')}')" title="Rename"><i class="fa-solid fa-pen-to-square"></i></button>
+                        <button class="btn btn-sm btn-outline" data-device-id="${id}" data-device-name="${escapeHtml(d.device_name || '')}" onclick="promptRenameDevice(this.dataset.deviceId, this.dataset.deviceName)" title="Rename"><i class="fa-solid fa-pen-to-square"></i></button>
                         ${quarantineBtn}
                     </div>
                 </td>
@@ -345,33 +357,16 @@ function promptRenameDevice(id, currentName) {
 }
 
 async function refreshDevices() {
-    if (refreshInProgress || document.hidden || isLiveFeedPaused()) return;
+    if (refreshInProgress || document.hidden || (typeof isLiveFeedPaused === "function" && isLiveFeedPaused())) return;
     refreshInProgress = true;
     try {
         const res = await fetch("/api/devices", { cache: "no-store" });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const devices = await res.json();
-        if (Array.isArray(devices)) {
-            currentDevices = devices;
-            // Update summary badges
-            const online = devices.filter(d => d.status === "online").length;
-            const offline = devices.filter(d => d.status === "offline").length;
-            const quarantined = devices.filter(d => d.status === "quarantined").length;
-            const totalEl = document.getElementById("devices-count-total");
-            const onlineEl = document.getElementById("devices-count-online");
-            const offlineEl = document.getElementById("devices-count-offline");
-            const quarEl = document.getElementById("devices-count-quarantined");
-            if (totalEl) totalEl.textContent = `${devices.length} Total`;
-            if (onlineEl) onlineEl.textContent = `${online} Online`;
-            if (offlineEl) offlineEl.textContent = `${offline} Offline`;
-            if (quarEl) quarEl.textContent = `${quarantined} Quarantined`;
-
-            renderFilteredDevices();
-            const statusEl = document.getElementById("refresh-status");
-            if (statusEl) statusEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
-        }
-    } catch (err) {
-        console.error("Device refresh failed:", err);
+        if (!res.ok) return;
+        const data = await res.json();
+        currentDevices = data.devices || [];
+        renderFilteredDevices();
+    } catch (e) {
+        console.warn("Devices refresh error:", e);
     } finally {
         refreshInProgress = false;
     }

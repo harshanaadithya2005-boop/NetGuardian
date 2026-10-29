@@ -127,17 +127,17 @@
                         </td>
                         <td>
                             <div class="risk-bar-container">
-                                <div class="risk-bar {% if dev.risk_score >= 70 %}risk-high{% elif dev.risk_score >= 40 %}risk-medium{% else %}risk-low{% endif %}" 
+                                <div class="risk-bar {{ 'risk-high' if dev.risk_score >= 70 else ('risk-medium' if dev.risk_score >= 40 else 'risk-low') }}" 
                                      style="width: {{ [dev.risk_score, 10]|max }}%;">
                                 </div>
                             </div>
-                            <span class="risk-number {% if dev.risk_score >= 70 %}text-danger{% elif dev.risk_score >= 40 %}text-warning{% else %}text-success{% endif %}">
+                            <span class="risk-number {{ 'text-danger' if dev.risk_score >= 70 else ('text-warning' if dev.risk_score >= 40 else 'text-success') }}">
                                 {{ dev.risk_score }}/100
                             </span>
                         </td>
                         <td>
                             <button class="btn btn-sm {{ 'btn-trusted' if dev.trusted else 'btn-untrusted' }}" 
-                                    onclick="toggleTrust({{ dev.id }}, {{ 0 if dev.trusted else 1 }})">
+                                    data-device-id="{{ dev.id }}" data-trust-target="{{ 0 if dev.trusted else 1 }}" onclick="toggleTrust(this.dataset.deviceId, this.dataset.trustTarget)">
                                 <i class="fa-solid {{ 'fa-shield-check' if dev.trusted else 'fa-shield-xmark' }}"></i>
                                 {{ 'Trusted' if dev.trusted else 'Untrusted' }}
                             </button>
@@ -146,11 +146,11 @@
                             <div class="action-buttons">
                                 <a href="/device/{{ dev.id }}" class="btn btn-sm btn-outline"><i class="fa-solid fa-chart-pie"></i> Profile</a>
                                 {% if (dev.router_enforcement.has_ownership and dev.router_enforcement.state != 'RELEASED') or dev.status == 'quarantined' %}
-                                <button class="btn btn-sm btn-success" onclick="toggleQuarantine({{ dev.id }}, 'release')">
+                                <button class="btn btn-sm btn-success" data-device-id="{{ dev.id }}" onclick="toggleQuarantine(this.dataset.deviceId, 'release')">
                                     <i class="fa-solid fa-unlock"></i> {{ "Release LIVE / Review" if (protection_mode == "LIVE" or (dev.router_enforcement.has_ownership and dev.router_enforcement.state != "RELEASED")) else "Release DEMO" }}
                                 </button>
                                 {% else %}
-                                <button class="btn btn-sm btn-danger" onclick="toggleQuarantine({{ dev.id }}, 'quarantine')">
+                                <button class="btn btn-sm btn-danger" data-device-id="{{ dev.id }}" onclick="toggleQuarantine(this.dataset.deviceId, 'quarantine')">
                                     <i class="fa-solid fa-lock"></i> {{ "Review LIVE Quarantine" if protection_mode == "LIVE" else "Quarantine (DEMO)" }}
                                 </button>
                                 {% endif %}
@@ -199,10 +199,10 @@
                     </div>
                 </div>
                 {% if alert.status == 'open' %}
-                <button type="button" class="btn btn-sm btn-outline" onclick="openAiExplainModal({{ alert.id }})" title="AI Incident Investigation">
+                <button type="button" class="btn btn-sm btn-outline" data-alert-id="{{ alert.id }}" onclick="openAiExplainModal(this.dataset.alertId)" title="AI Incident Investigation">
                     <i class="fa-solid fa-brain text-accent"></i>
                 </button>
-                <button class="btn btn-sm btn-resolve" onclick="resolveAlert({{ alert.id }})" title="Resolve Alert">
+                <button class="btn btn-sm btn-resolve" data-alert-id="{{ alert.id }}" onclick="resolveAlert(this.dataset.alertId)" title="Resolve Alert">
                     <i class="fa-solid fa-check"></i>
                 </button>
                 {% endif %}

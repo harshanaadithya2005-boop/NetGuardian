@@ -79,7 +79,7 @@
             {% else %}<span class="st off">○ OFFLINE</span>{% endif %}
           </td>
           <td>
-            <div class="bar"><div class="fill {% if d['risk_score'] >= 70 %}r{% elif d['risk_score'] >= 30 %}a{% else %}g{% endif %}" style="width: {{ d['risk_score'] }}%"></div></div>
+            <div class="bar"><div class="fill {{ 'r' if d['risk_score'] >= 70 else ('a' if d['risk_score'] >= 30 else 'g') }}" style="width: {{ d['risk_score'] }}%"></div></div>
             <small>{{ d['risk_score'] }}/100</small>
           </td>
           <td>
