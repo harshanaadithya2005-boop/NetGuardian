@@ -1,253 +1,385 @@
-
 {% extends "base.html" %}
 
 {% block content %}
+<section class="card">
+    <div class="panel-header">
+        <div>
+            <h2><i class="fa-solid fa-server text-accent"></i> Network Device Inventory</h2>
+            <p class="panel-subtitle">Comprehensive registry of all active and historically observed endpoints on the monitored subnet.</p>
+        </div>
+        <div class="toolbar-right">
+            <span class="badge badge-info" id="devices-count-total">{{ devices|length }} Total</span>
+            <span class="badge badge-success" id="devices-count-online">
+                {{ devices|selectattr('status', 'equalto', 'online')|list|length }} Online
+            </span>
+            <span class="badge badge-secondary" id="devices-count-offline">
+                {{ devices|selectattr('status', 'equalto', 'offline')|list|length }} Offline
+            </span>
+            <span class="badge badge-danger" id="devices-count-quarantined">
+                {{ devices|selectattr('status', 'equalto', 'quarantined')|list|length }} Quarantined
+            </span>
+        </div>
+    </div>
 
+    <!-- Interactive Search and Filter Toolbar -->
+    <div class="table-toolbar">
+        <div class="toolbar-left">
+            <div class="search-input-wrap">
+                <i class="fa-solid fa-magnifying-glass"></i>
+                <input type="text" id="devices-search" class="search-input" placeholder="Search by name, IP, MAC..." oninput="handleSearchFilter()">
+            </div>
 
-<style>
-    .devices-container {
-        max-width: 1450px;
-        margin: 30px auto;
-        padding: 0 24px;
-    }
+            <div class="filter-group" id="status-filters">
+                <button type="button" class="filter-chip active" data-filter="status" data-value="all" onclick="setFilter('status', 'all')">All</button>
+                <button type="button" class="filter-chip" data-filter="status" data-value="online" onclick="setFilter('status', 'online')">Online</button>
+                <button type="button" class="filter-chip" data-filter="status" data-value="offline" onclick="setFilter('status', 'offline')">Offline</button>
+                <button type="button" class="filter-chip" data-filter="status" data-value="quarantined" onclick="setFilter('status', 'quarantined')">Quarantined</button>
+            </div>
 
-    .devices-table-wrapper {
-        width: 100%;
-        overflow-x: auto;
-        margin-top: 20px;
-        border: 1px solid #263246;
-        border-radius: 12px;
-        background: #111827;
-    }
+            <div class="filter-group" id="trust-filters">
+                <button type="button" class="filter-chip active" data-filter="trust" data-value="all" onclick="setFilter('trust', 'all')">All Trust</button>
+                <button type="button" class="filter-chip" data-filter="trust" data-value="trusted" onclick="setFilter('trust', 'trusted')">Trusted</button>
+                <button type="button" class="filter-chip" data-filter="trust" data-value="untrusted" onclick="setFilter('trust', 'untrusted')">Untrusted</button>
+            </div>
+        </div>
 
-    .devices-table {
-        width: 100%;
-        min-width: 1050px;
-        border-collapse: collapse;
-        text-align: left;
-        font-size: 13px;
-    }
+        <div class="toolbar-right">
+            <span class="subtext" id="refresh-status">Live updates active</span>
+        </div>
+    </div>
 
-    .devices-table thead {
-        background: #1e293b;
-    }
-
-    .devices-table th {
-        padding: 15px 18px;
-        color: #93c5fd;
-        white-space: nowrap;
-        border-bottom: 1px solid #334155;
-    }
-
-    .devices-table td {
-        padding: 14px 18px;
-        color: #e2e8f0;
-        border-bottom: 1px solid #243145;
-        white-space: nowrap;
-    }
-
-    .devices-table tbody tr:hover {
-        background: #1e293b;
-    }
-
-    .devices-table a {
-        color: #22d3ee;
-        text-decoration: none;
-        font-weight: 600;
-    }
-
-    .devices-table a:hover {
-        text-decoration: underline;
-    }
-
-    .devices-subtitle {
-        color: #94a3b8;
-        font-size: 13px;
-        margin-top: 8px;
-    }
-</style>
-
-
-<div class="devices-container">
-<h2>Network Devices</h2>
-
-<p>
-    Devices are updated automatically every 5 seconds.
-    <span id="refresh-status">Loading live data...</span>
-</p>
-
-<div class="devices-table-wrapper">
-<table class="devices-table">    <thead>
-        <tr>
-            <th>Device Name</th>
-            <th>IP Address</th>
-            <th>MAC Address</th>
-            <th>Type</th>
-            <th>Presence / DEMO marker</th>
-            <th>LIVE router enforcement</th>
-            <th>Trusted</th>
-            <th>Risk Score</th>
-            <th>Last Seen</th>
-        </tr>
-    </thead>
-
-    <tbody id="devices-table-body">
-        {% for d in devices %}
-        <tr>
-            <td>{{ d['device_name'] or d['hostname'] or 'Unknown Device' }}</td>
-            <td>{{ d['ip_address'] or '-' }}</td>
-            <td>{{ d['mac_address'] or '-' }}</td>
-            <td>{{ d['device_type'] or '-' }}</td>
-            <td>{{ d['status'] }}</td>
-            <td>{{ d.router_enforcement.state }}{% if d.router_enforcement.verification_stale %} (stale){% endif %}</td>
-            <td>{{ 'Yes' if d['trusted'] else 'No' }}</td>
-            <td>{{ d['risk_score'] or 0 }}</td>
-            <td>{{ d['last_seen'] or '-' }}</td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
-</div>
-</div>
+    <!-- Devices Table -->
+    <div class="table-responsive">
+        <table class="data-table" id="devices-table">
+            <thead>
+                <tr>
+                    <th style="cursor: pointer;" onclick="sortTable('name')">
+                        Device Name / Hostname <i class="fa-solid fa-sort" id="sort-name"></i>
+                    </th>
+                    <th style="cursor: pointer;" onclick="sortTable('ip')">
+                        IP Address <i class="fa-solid fa-sort" id="sort-ip"></i>
+                    </th>
+                    <th>MAC Address</th>
+                    <th>Type</th>
+                    <th style="cursor: pointer;" onclick="sortTable('status')">
+                        Status <i class="fa-solid fa-sort" id="sort-status"></i>
+                    </th>
+                    <th style="cursor: pointer;" onclick="sortTable('risk')">
+                        Risk Score <i class="fa-solid fa-sort" id="sort-risk"></i>
+                    </th>
+                    <th>Trust</th>
+                    <th style="cursor: pointer;" onclick="sortTable('last_seen')">
+                        Last Seen <i class="fa-solid fa-sort" id="sort-last_seen"></i>
+                    </th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="devices-table-body">
+                {% for d in devices %}
+                <tr id="dev-row-{{ d.id }}" class="{{ 'row-quarantined' if d.status == 'quarantined' else '' }}">
+                    <td>
+                        <a href="/device/{{ d.id }}" class="device-link">
+                            <i class="fa-solid {{ 'fa-laptop' if 'workstation' in (d.device_type|lower) else ('fa-mobile-screen' if 'phone' in (d.device_type|lower) else ('fa-microchip' if 'iot' in (d.device_type|lower) else 'fa-network-wired')) }}"></i>
+                            <strong>{{ d.device_name or d.hostname or 'Unknown Device' }}</strong>
+                        </a>
+                        <div class="subtext">{{ d.hostname or 'No DNS PTR' }}</div>
+                    </td>
+                    <td><code>{{ d.ip_address or '-' }}</code></td>
+                    <td><small>{{ d.mac_address or '-' }}</small></td>
+                    <td><span class="device-tag">{{ d.device_type or 'General' }}</span></td>
+                    <td>
+                        {% if d.status == 'online' %}
+                        <span class="badge badge-success"><i class="fa-solid fa-circle-check"></i> Online</span>
+                        {% elif d.status == 'quarantined' %}
+                        <span class="badge badge-danger"><i class="fa-solid fa-ban"></i> Quarantined</span>
+                        {% else %}
+                        <span class="badge badge-secondary"><i class="fa-solid fa-circle-minus"></i> Offline</span>
+                        {% endif %}
+                        <div class="subtext">LIVE: {{ d.router_enforcement.state if d.router_enforcement else 'NOT_REQUESTED' }}</div>
+                    </td>
+                    <td>
+                        <div class="risk-bar-container">
+                            <div class="risk-bar {{ 'risk-high' if (d.risk_score or 0) >= 70 else ('risk-medium' if (d.risk_score or 0) >= 40 else 'risk-low') }}"
+                                 style="width: {{ [d.risk_score or 0, 10]|max }}%;"></div>
+                        </div>
+                        <span class="risk-number {{ 'text-danger' if (d.risk_score or 0) >= 70 else ('text-warning' if (d.risk_score or 0) >= 40 else 'text-success') }}">
+                            {{ d.risk_score or 0 }}/100
+                        </span>
+                    </td>
+                    <td>
+                        <button class="btn btn-sm {{ 'btn-trusted' if d.trusted else 'btn-untrusted' }}"
+                                onclick="handleToggleTrust({{ d.id }}, {{ 0 if d.trusted else 1 }})">
+                            <i class="fa-solid {{ 'fa-shield-check' if d.trusted else 'fa-shield-xmark' }}"></i>
+                            {{ 'Trusted' if d.trusted else 'Untrusted' }}
+                        </button>
+                    </td>
+                    <td><small>{{ d.last_seen or '-' }}</small></td>
+                    <td>
+                        <div class="action-buttons">
+                            <a href="/device/{{ d.id }}" class="btn btn-sm btn-outline" title="View behavioural profile">
+                                <i class="fa-solid fa-chart-pie"></i>
+                            </a>
+                            <button class="btn btn-sm btn-outline" onclick="promptRenameDevice({{ d.id }}, '{{ d.device_name or '' }}')" title="Rename device">
+                                <i class="fa-solid fa-pen-to-square"></i>
+                            </button>
+                            {% if d.status == 'quarantined' %}
+                            <button class="btn btn-sm btn-success" onclick="toggleQuarantine({{ d.id }}, 'release')" title="Release quarantine">
+                                <i class="fa-solid fa-unlock"></i>
+                            </button>
+                            {% else %}
+                            <button class="btn btn-sm btn-danger" onclick="toggleQuarantine({{ d.id }}, 'quarantine')" title="Quarantine device">
+                                <i class="fa-solid fa-lock"></i>
+                            </button>
+                            {% endif %}
+                        </div>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="9" class="empty-state">
+                        <i class="fa-solid fa-network-wired empty-icon"></i>
+                        <p>No network devices discovered yet. Click "Scan Network" above to run an active discovery sweep.</p>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
 
 <script>
-const tableBody = document.getElementById("devices-table-body");
-const refreshStatus = document.getElementById("refresh-status");
-
-// Prefer human-readable hostnames over autogenerated
-// labels such as Device-104.
-function getDisplayName(device) {
-    const customName = device.device_name || "";
-    const hostname = device.hostname || "";
-
-    const genericName = /^Device-\d+$/i.test(customName);
-
-    if (customName && !genericName) {
-        return customName;
-    }
-
-    if (
-        hostname &&
-        hostname.toLowerCase() !== "unknown"
-    ) {
-        return hostname;
-    }
-
-    return customName || "Unknown Device";
-}
-
-function createCell(row, value) {
-    const cell = document.createElement("td");
-    cell.textContent = value == null ? "-" : String(value);
-    row.appendChild(cell);
-    return cell;
-}
-
-function renderDevices(devices) {
-    tableBody.replaceChildren();
-
-    // Show online devices first, followed by offline devices.
-    devices.sort((a, b) => {
-        if (a.status === "online" && b.status !== "online") {
-            return -1;
-        }
-
-        if (b.status === "online" && a.status !== "online") {
-            return 1;
-        }
-
-        return (a.id || 0) - (b.id || 0);
-    });
-
-    for (const device of devices) {
-        const row = document.createElement("tr");
-
-        const nameCell = createCell(
-            row,
-            getDisplayName(device)
-        );
-
-        // Preserve navigation to each device's details.
-        const link = document.createElement("a");
-        link.href = `/device/${encodeURIComponent(device.id)}`;
-        link.textContent = nameCell.textContent;
-
-        nameCell.replaceChildren(link);
-
-        createCell(row, device.ip_address);
-        createCell(row, device.mac_address);
-        createCell(row, device.device_type);
-
-        const statusCell = createCell(
-            row,
-            device.status
-        );
-
-        if (device.status === "online") {
-            statusCell.style.color = "#16a34a";
-            statusCell.style.fontWeight = "bold";
-        } else if (device.status === "offline") {
-            statusCell.style.color = "#dc2626";
-            statusCell.style.fontWeight = "bold";
-        }
-
-        createCell(row, `${device.router_enforcement?.state || "NOT_REQUESTED"}${device.router_enforcement?.verification_stale ? " (stale)" : ""}`);
-        createCell(
-            row,
-            device.trusted ? "Yes" : "No"
-        );
-
-        createCell(row, device.risk_score ?? 0);
-        createCell(row, device.last_seen);
-
-        tableBody.appendChild(row);
-    }
-}
-
+let currentDevices = [];
+let currentFilter = {
+    status: "all",
+    trust: "all",
+    search: ""
+};
+let currentSort = {
+    column: "name",
+    direction: "asc"
+};
 let refreshInProgress = false;
 
-async function refreshDevices() {
-    if (refreshInProgress) {
+function getDeviceIcon(type) {
+    const t = String(type || "").toLowerCase();
+    if (t.includes("workstation") || t.includes("desktop") || t.includes("laptop")) return "fa-laptop";
+    if (t.includes("phone") || t.includes("tablet") || t.includes("mobile")) return "fa-mobile-screen";
+    if (t.includes("server")) return "fa-server";
+    if (t.includes("iot") || t.includes("smart")) return "fa-microchip";
+    return "fa-network-wired";
+}
+
+function getDisplayName(d) {
+    const custom = (d.device_name || "").trim();
+    if (custom && !/^Device-\d+$/i.test(custom)) return custom;
+    return d.hostname || custom || "Unknown Device";
+}
+
+function handleSearchFilter() {
+    const input = document.getElementById("devices-search");
+    currentFilter.search = (input?.value || "").toLowerCase().trim();
+    renderFilteredDevices();
+}
+
+function setFilter(type, value) {
+    currentFilter[type] = value;
+    const group = document.getElementById(`${type}-filters`);
+    if (group) {
+        group.querySelectorAll(".filter-chip").forEach(btn => {
+            btn.classList.toggle("active", btn.dataset.value === value);
+        });
+    }
+    renderFilteredDevices();
+}
+
+function sortTable(column) {
+    if (currentSort.column === column) {
+        currentSort.direction = currentSort.direction === "asc" ? "desc" : "asc";
+    } else {
+        currentSort.column = column;
+        currentSort.direction = "asc";
+    }
+    // Update icons
+    ["name", "ip", "status", "risk", "last_seen"].forEach(col => {
+        const icon = document.getElementById(`sort-${col}`);
+        if (icon) {
+            if (col === currentSort.column) {
+                icon.className = `fa-solid fa-sort-${currentSort.direction === 'asc' ? 'up' : 'down'}`;
+            } else {
+                icon.className = "fa-solid fa-sort";
+            }
+        }
+    });
+    renderFilteredDevices();
+}
+
+function renderFilteredDevices() {
+    const tbody = document.getElementById("devices-table-body");
+    if (!tbody || !currentDevices.length) return;
+
+    let filtered = currentDevices.filter(d => {
+        // Status filter
+        if (currentFilter.status !== "all" && d.status !== currentFilter.status) return false;
+        // Trust filter
+        if (currentFilter.trust === "trusted" && !d.trusted) return false;
+        if (currentFilter.trust === "untrusted" && d.trusted) return false;
+        // Search query
+        if (currentFilter.search) {
+            const q = currentFilter.search;
+            const name = (d.device_name || "").toLowerCase();
+            const host = (d.hostname || "").toLowerCase();
+            const ip = (d.ip_address || "").toLowerCase();
+            const mac = (d.mac_address || "").toLowerCase();
+            if (!name.includes(q) && !host.includes(q) && !ip.includes(q) && !mac.includes(q)) return false;
+        }
+        return true;
+    });
+
+    // Sorting
+    filtered.sort((a, b) => {
+        let valA, valB;
+        if (currentSort.column === "name") {
+            valA = getDisplayName(a).toLowerCase();
+            valB = getDisplayName(b).toLowerCase();
+        } else if (currentSort.column === "ip") {
+            valA = String(a.ip_address || "");
+            valB = String(b.ip_address || "");
+            return currentSort.direction === "asc" ? valA.localeCompare(valB, undefined, { numeric: true }) : valB.localeCompare(valA, undefined, { numeric: true });
+        } else if (currentSort.column === "risk") {
+            valA = Number(a.risk_score || 0);
+            valB = Number(b.risk_score || 0);
+        } else if (currentSort.column === "status") {
+            valA = a.status || "";
+            valB = b.status || "";
+        } else {
+            valA = a.last_seen || "";
+            valB = b.last_seen || "";
+        }
+        if (valA < valB) return currentSort.direction === "asc" ? -1 : 1;
+        if (valA > valB) return currentSort.direction === "asc" ? 1 : -1;
+        return 0;
+    });
+
+    if (!filtered.length) {
+        tbody.innerHTML = `<tr><td colspan="9" class="empty-state"><i class="fa-solid fa-filter-circle-xmark empty-icon"></i><p>No devices match current filters.</p></td></tr>`;
         return;
     }
 
+    tbody.innerHTML = filtered.map(d => {
+        const id = Number(d.id);
+        const trusted = Boolean(d.trusted);
+        const name = getDisplayName(d);
+        const iconClass = getDeviceIcon(d.device_type);
+        const risk = Math.max(0, Math.min(100, Number(d.risk_score) || 0));
+        const riskLevel = risk >= 70 ? 'high' : (risk >= 40 ? 'medium' : 'low');
+        const riskColor = risk >= 70 ? 'text-danger' : (risk >= 40 ? 'text-warning' : 'text-success');
+
+        const statusBadge = d.status === 'online'
+            ? `<span class="badge badge-success"><i class="fa-solid fa-circle-check"></i> Online</span>`
+            : (d.status === 'quarantined'
+                ? `<span class="badge badge-danger"><i class="fa-solid fa-ban"></i> Quarantined</span>`
+                : `<span class="badge badge-secondary"><i class="fa-solid fa-circle-minus"></i> Offline</span>`);
+
+        const isQuarantined = d.status === 'quarantined';
+        const quarantineBtn = isQuarantined
+            ? `<button class="btn btn-sm btn-success" onclick="toggleQuarantine(${id}, 'release')" title="Release quarantine"><i class="fa-solid fa-unlock"></i></button>`
+            : `<button class="btn btn-sm btn-danger" onclick="toggleQuarantine(${id}, 'quarantine')" title="Quarantine device"><i class="fa-solid fa-lock"></i></button>`;
+
+        return `
+            <tr id="dev-row-${id}" class="${isQuarantined ? 'row-quarantined' : ''}">
+                <td>
+                    <a href="/device/${id}" class="device-link">
+                        <i class="fa-solid ${iconClass}"></i>
+                        <strong>${escapeHtml(name)}</strong>
+                    </a>
+                    <div class="subtext">${escapeHtml(d.hostname || 'No DNS PTR')}</div>
+                </td>
+                <td><code>${escapeHtml(d.ip_address || '-')}</code></td>
+                <td><small>${escapeHtml(d.mac_address || '-')}</small></td>
+                <td><span class="device-tag">${escapeHtml(d.device_type || 'General')}</span></td>
+                <td>
+                    ${statusBadge}
+                    <div class="subtext">LIVE: ${escapeHtml(d.router_enforcement?.state || 'NOT_REQUESTED')}</div>
+                </td>
+                <td>
+                    <div class="risk-bar-container">
+                        <div class="risk-bar risk-${riskLevel}" style="width: ${Math.max(risk, 10)}%;"></div>
+                    </div>
+                    <span class="risk-number ${riskColor}">${risk}/100</span>
+                </td>
+                <td>
+                    <button class="btn btn-sm ${trusted ? 'btn-trusted' : 'btn-untrusted'}" onclick="handleToggleTrust(${id}, ${trusted ? 0 : 1})">
+                        <i class="fa-solid ${trusted ? 'fa-shield-check' : 'fa-shield-xmark'}"></i>
+                        ${trusted ? 'Trusted' : 'Untrusted'}
+                    </button>
+                </td>
+                <td><small>${escapeHtml(d.last_seen || '-')}</small></td>
+                <td>
+                    <div class="action-buttons">
+                        <a href="/device/${id}" class="btn btn-sm btn-outline" title="View profile"><i class="fa-solid fa-chart-pie"></i></a>
+                        <button class="btn btn-sm btn-outline" onclick="promptRenameDevice(${id}, '${escapeHtml(d.device_name || '')}')" title="Rename"><i class="fa-solid fa-pen-to-square"></i></button>
+                        ${quarantineBtn}
+                    </div>
+                </td>
+            </tr>
+        `;
+    }).join("");
+}
+
+function escapeHtml(str) {
+    return String(str ?? "").replace(/[&<>"']/g, c => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[c]));
+}
+
+async function handleToggleTrust(id, newState) {
+    await toggleTrust(id, newState);
+    await refreshDevices();
+}
+
+function promptRenameDevice(id, currentName) {
+    const newName = prompt("Enter new friendly name for this device:", currentName || "");
+    if (newName !== null && newName.trim() !== "") {
+        renameDevice(id, newName.trim());
+    }
+}
+
+async function refreshDevices() {
+    if (refreshInProgress || document.hidden || isLiveFeedPaused()) return;
     refreshInProgress = true;
-
     try {
-        const response = await fetch("/api/devices", {
-            cache: "no-store"
-        });
+        const res = await fetch("/api/devices", { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const devices = await res.json();
+        if (Array.isArray(devices)) {
+            currentDevices = devices;
+            // Update summary badges
+            const online = devices.filter(d => d.status === "online").length;
+            const offline = devices.filter(d => d.status === "offline").length;
+            const quarantined = devices.filter(d => d.status === "quarantined").length;
+            const totalEl = document.getElementById("devices-count-total");
+            const onlineEl = document.getElementById("devices-count-online");
+            const offlineEl = document.getElementById("devices-count-offline");
+            const quarEl = document.getElementById("devices-count-quarantined");
+            if (totalEl) totalEl.textContent = `${devices.length} Total`;
+            if (onlineEl) onlineEl.textContent = `${online} Online`;
+            if (offlineEl) offlineEl.textContent = `${offline} Offline`;
+            if (quarEl) quarEl.textContent = `${quarantined} Quarantined`;
 
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
+            renderFilteredDevices();
+            const statusEl = document.getElementById("refresh-status");
+            if (statusEl) statusEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
         }
-
-        const devices = await response.json();
-
-        if (!Array.isArray(devices)) {
-            throw new Error("Unexpected device API response");
-        }
-
-        renderDevices(devices);
-
-        refreshStatus.textContent =
-            "Last updated: " +
-            new Date().toLocaleTimeString();
-
-    } catch (error) {
-        console.error("Device refresh failed:", error);
-
-        // Keep the most recent successful table instead
-        // of incorrectly marking devices Offline.
-        refreshStatus.textContent =
-            "Connection issue — showing last known data";
+    } catch (err) {
+        console.error("Device refresh failed:", err);
     } finally {
         refreshInProgress = false;
     }
 }
 
-refreshDevices();
-setInterval(refreshDevices, 5000);
+document.addEventListener("DOMContentLoaded", () => {
+    refreshDevices();
+    setInterval(refreshDevices, 5000);
+});
 </script>
-
 {% endblock %}
