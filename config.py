@@ -13,6 +13,7 @@ DATABASE_PATH = BASE_DIR / "database" / "network_monitor.db"
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 5000
 SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 # Risk Engine Weights (as defined in Project Proposal Section 8.3)
 RISK_WEIGHTS = {

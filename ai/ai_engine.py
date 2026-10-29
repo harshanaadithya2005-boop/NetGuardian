@@ -1,4 +1,7 @@
+import os
 import json
+import requests
+import config
 import urllib.request
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
@@ -67,11 +70,57 @@ def _ask_ollama(prompt):
         return json.loads(resp.read())["response"].strip()
 
 
+def _ask_gemini(alert_type, severity, risk_score, description, device_ip):
+    api_key = getattr(config, "GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return None
+    prompt = (
+        f"You are a Senior Network Security Analyst analyzing an intrusion detection alert.\n"
+        f"Alert Type: {alert_type}\n"
+        f"Severity: {severity}\n"
+        f"Risk Score: {risk_score}/100\n"
+        f"Device IP: {device_ip}\n"
+        f"Observed Evidence: {description}\n\n"
+        f"Provide your analysis in exactly two sections:\n"
+        f"SUMMARY: <Concise technical explanation of the behavior, mechanism, and immediate risk>\n"
+        f"RECOMMENDATION: <Concrete 2-3 step remediation or verification instructions for the network administrator>"
+    )
+    for model in ["gemini-3.8-flash", "gemini-flash-latest", "gemini-2.0-flash"]:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        try:
+            res = requests.post(
+                url,
+                json={"contents": [{"parts": [{"text": prompt}]}]},
+                headers={"Content-Type": "application/json"},
+                timeout=6
+            )
+            if res.status_code == 200:
+                data = res.json()
+                text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                summary = ""
+                recommendation = ""
+                if "SUMMARY:" in text and "RECOMMENDATION:" in text:
+                    parts = text.split("RECOMMENDATION:")
+                    summary = parts[0].replace("SUMMARY:", "").strip()
+                    recommendation = parts[1].strip()
+                else:
+                    lines = [l.strip() for l in text.split("\n") if l.strip()]
+                    summary = lines[0] if lines else text
+                    recommendation = "\n".join(lines[1:]) if len(lines) > 1 else "Investigate source IP and inspect related network logs."
+                return summary, recommendation, "Gemini AI"
+        except Exception:
+            continue
+    return None
+
+
 def explain_alert(alert_type, severity, risk_score, description, device_ip):
     """Deterministic evidence-grounded explanation; optional model is not required.
 
     Unverified model prose never replaces recorded facts or authorizes response.
     """
+    gemini_res = _ask_gemini(alert_type, severity, risk_score, description, device_ip)
+    if gemini_res:
+        return gemini_res
     _,recommendation=_fallback(alert_type)
     evidence=str(description or 'No packet-level details were recorded for this alert.')
     summary=f"Recorded {alert_type} alert for {device_ip}: {evidence} Risk at alert creation: {risk_score}/100 ({severity}). This is an indicator requiring review, not proof of compromise."
