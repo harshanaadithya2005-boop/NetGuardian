@@ -265,6 +265,7 @@ def get_verified_local_devices():
 # ---------------------------------------------------------
 
 @app.route("/alerts/<int:alert_id>/explain")
+@app.route("/api/alerts/<int:alert_id>/explain")
 def explain(alert_id):
     """Generate or retrieve an AI explanation for a security alert."""
 
@@ -325,6 +326,18 @@ def explain(alert_id):
             )
 
             conn.commit()
+
+        if request.path.startswith("/api/") or request.headers.get("Accept") == "application/json":
+            return jsonify({
+                "status": "success",
+                "summary": summary,
+                "recommendation": recommendation,
+                "source": source,
+                "alert_type": alert["alert_type"],
+                "severity": alert["severity"],
+                "ip_address": alert["ip_address"],
+                "risk_score": alert["risk_score"]
+            })
 
         return render_template(
             "explain.html",
