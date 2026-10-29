@@ -1,20 +1,83 @@
 {% extends "base.html" %}
+
 {% block content %}
-<h2>AI Explanation</h2>
-
-<div class="panel">
-  <h3>{{ alert['alert_type'] }} &mdash; {{ alert['ip_address'] }}</h3>
-  <p>Risk {{ alert['risk_score'] }} &nbsp;
-     <span class="badge {{ alert['severity'] }}">{{ alert['severity'] }}</span></p>
+<div class="breadcrumb" style="margin-bottom: 20px;">
+    <a href="/alerts" class="btn btn-sm btn-outline"><i class="fa-solid fa-arrow-left"></i> Back to Alerts Feed</a>
 </div>
 
-<div class="panel">
-  <h3>Summary</h3>
-  <p>{{ summary }}</p>
-  <h3>Recommendation</h3>
-  <p>{{ recommendation }}</p>
-  <p style="color:#94a3b8; font-size:12px;">Source: {{ source }}</p>
-</div>
+<section class="card">
+    <div class="panel-header">
+        <div>
+            <h2><i class="fa-solid fa-brain text-accent"></i> AI Security Incident Investigation</h2>
+            <p class="panel-subtitle">Intrusion telemetry analysis generated from recorded network flows and rule engine indicators.</p>
+        </div>
+        <div class="toolbar-right">
+            <span class="badge badge-{{ alert['severity']|lower }} badge-lg">{{ alert['severity'] }}</span>
+            <span class="badge badge-info badge-lg">Risk Score: {{ alert['risk_score'] }}/100</span>
+        </div>
+    </div>
 
-<a href="/alerts"><button type="button">Back to Alerts</button></a>
+    <div class="ai-alert-banner" style="margin-bottom: 24px;">
+        <div>
+            <strong>Alert Type:</strong>
+            <span class="badge badge-danger">{{ alert['alert_type']|replace('_', ' ')|upper }}</span>
+        </div>
+        <div>
+            <strong>Device IP:</strong>
+            <code class="mono">{{ alert['ip_address'] }}</code>
+        </div>
+        <div>
+            <strong>Detected Timestamp:</strong>
+            <span class="subtext">{{ alert['timestamp'] }}</span>
+        </div>
+        <div class="source-tag">
+            <i class="fa-solid fa-microchip-ai"></i> Engine: {{ source }}
+        </div>
+    </div>
+
+    <div class="dashboard-grid">
+        <div class="card" style="margin-bottom: 0;">
+            <div class="panel-header">
+                <h3><i class="fa-solid fa-file-waveform text-accent"></i> Threat Summary & Context</h3>
+            </div>
+            <div class="ai-text" style="font-size: 14px; line-height: 1.7;">
+                {{ summary }}
+            </div>
+            {% if alert['description'] %}
+            <div class="mt-20">
+                <span class="subtext"><strong>Packet Observation Evidence:</strong></span>
+                <p class="subtext mono" style="margin-top: 4px; padding: 10px; background: rgba(0,0,0,0.25); border-radius: 6px;">{{ alert['description'] }}</p>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="card" style="margin-bottom: 0;">
+            <div class="panel-header">
+                <h3><i class="fa-solid fa-clipboard-check text-accent"></i> Recommended Countermeasures</h3>
+            </div>
+            <div class="ai-text" style="font-size: 14px; line-height: 1.7;">
+                {{ recommendation }}
+            </div>
+
+            <div class="action-buttons mt-20" style="justify-content: flex-end;">
+                {% if alert['status'] == 'open' %}
+                <form method="post" action="/alerts/{{ alert['id'] }}/status" style="display:inline;">
+                    <input type="hidden" name="status" value="resolved">
+                    <button type="submit" class="btn btn-success">
+                        <i class="fa-solid fa-check"></i> Mark Resolved
+                    </button>
+                </form>
+                <form method="post" action="/alerts/{{ alert['id'] }}/status" style="display:inline;">
+                    <input type="hidden" name="status" value="ignored">
+                    <button type="submit" class="btn btn-outline">
+                        <i class="fa-solid fa-eye-slash"></i> Ignore
+                    </button>
+                </form>
+                {% else %}
+                <span class="badge badge-secondary">Status: {{ alert['status']|upper }}</span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</section>
 {% endblock %}

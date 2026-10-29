@@ -390,6 +390,8 @@ def alerts_page():
 def update_alert_status(alert_id):
 
     allowed_statuses = {"open", "resolved", "ignored"}
+    json_data = request.get_json(silent=True) or {}
+    new_status = (request.form.get("status") or json_data.get("status") or "").strip().lower()
     new_status = request.form.get(
         "status", ""
     ).strip().lower()
@@ -418,6 +420,8 @@ def update_alert_status(alert_id):
     finally:
         conn.close()
 
+    if request.is_json or request.headers.get("Accept") == "application/json" or request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return jsonify(status="success", message=f"Alert {alert_id} status updated to {new_status}.")
     return redirect("/alerts")
 
 
@@ -469,6 +473,8 @@ def reset_alerts():
     finally:
         conn.close()
 
+    if request.is_json or request.headers.get("Accept") == "application/json" or request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return jsonify(status="success", message=f"Alert {alert_id} status updated to {new_status}.")
     return redirect("/alerts")
 
 
