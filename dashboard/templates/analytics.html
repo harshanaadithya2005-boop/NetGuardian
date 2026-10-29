@@ -1,189 +1,273 @@
-
 {% extends "base.html" %}
-{% block content %}
 
-<h2>Analytics</h2>
+{% block content %}
+<div class="panel-header" style="margin-bottom: 24px;">
+    <div>
+        <h2><i class="fa-solid fa-chart-line text-accent"></i> Real-Time Telemetry & Threat Analytics</h2>
+        <p class="panel-subtitle">Longitudinal network traffic trends, protocol distribution, and risk scoring distributions across all monitored hosts.</p>
+    </div>
+    <div class="toolbar-right">
+        <span class="badge badge-info" id="analytics-status">Live Analytics Active</span>
+    </div>
+</div>
 
 <!-- Traffic Usage Chart -->
-<div class="panel">
-  <h3>Traffic Usage (bytes per day)</h3>
-  <canvas id="trafficChart" height="90"></canvas>
+<div class="card">
+    <div class="panel-header">
+        <h3><i class="fa-solid fa-wave-pulse text-accent"></i> Daily Network Traffic Volume (Bytes / Day)</h3>
+        <span class="subtext">Observed genuine packet flows excluding simulated events</span>
+    </div>
+    <div style="height: 280px; width: 100%;">
+        <canvas id="trafficChart"></canvas>
+    </div>
 </div>
 
 <!-- Protocol Usage and Alert Severity Charts -->
-<div style="display: flex; gap: 16px; flex-wrap: wrap; margin-top: 20px;">
+<div class="dashboard-grid">
+    <div class="card" style="margin-bottom: 0;">
+        <div class="panel-header">
+            <h3><i class="fa-solid fa-chart-pie text-accent"></i> Network Protocol Breakdown</h3>
+        </div>
+        <div style="height: 260px; display: flex; align-items: center; justify-content: center;">
+            <canvas id="protoChart"></canvas>
+        </div>
+    </div>
 
-  <div class="panel" style="flex: 1; min-width: 300px;">
-    <h3>Protocol Usage</h3>
-    <canvas id="protoChart"></canvas>
-  </div>
-
-  <div class="panel" style="flex: 1; min-width: 300px;">
-    <h3>Alert Severity Distribution</h3>
-    <canvas id="riskChart"></canvas>
-  </div>
-
+    <div class="card" style="margin-bottom: 0;">
+        <div class="panel-header">
+            <h3><i class="fa-solid fa-chart-simple text-accent"></i> Historical Alert Severity Distribution</h3>
+        </div>
+        <div style="height: 260px;">
+            <canvas id="riskChart"></canvas>
+        </div>
+    </div>
 </div>
 
 <!-- Current Device Risk Levels Chart -->
-<div class="panel" style="margin-top: 20px;">
-  <h3>Current Device Risk Levels</h3>
-
-  <p style="color: #94a3b8;">
-    Current risk distribution of registered devices on the local network,
-    including offline devices.
-  </p>
-
-<div style="width: 100%; max-width: 700px; height: 300px; margin: 20px auto;">
-    <canvas id="deviceRiskChart"></canvas>
+<div class="card mt-20">
+    <div class="panel-header">
+        <h3><i class="fa-solid fa-gauge-high text-accent"></i> Current Host Risk Band Distribution</h3>
+        <span class="subtext">Active network endpoints categorized into Low (0–39), Medium (40–69), High (70–100)</span>
+    </div>
+    <div style="width: 100%; max-width: 700px; height: 260px; margin: 10px auto;">
+        <canvas id="deviceRiskChart"></canvas>
+    </div>
 </div>
 
-</div>
+<!-- Chart Data Container (JSON) -->
+<script id="analytics-init-data" type="application/json">
+{
+    "traffic_labels": {{ traffic_labels|tojson }},
+    "traffic_values": {{ traffic_values|tojson }},
+    "proto_labels": {{ proto_labels|tojson }},
+    "proto_values": {{ proto_values|tojson }},
+    "risk_values": {{ risk_values|tojson }},
+    "device_risk_values": {{ device_risk_values|default([0, 0, 0])|tojson }}
+}
+</script>
+
 <!-- Chart.js Library -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-
 <script src="/static/js/chart-fallback.js"></script>
 <script>
 document.addEventListener("DOMContentLoaded", function () {
+    // Read pre-rendered analytics data safely
+    const initDataEl = document.getElementById("analytics-init-data");
+    const initData = initDataEl ? JSON.parse(initDataEl.textContent || "{}") : {};
+    const initialTrafficLabels = initData.traffic_labels || [];
+    const initialTrafficValues = initData.traffic_values || [];
+    const initialProtoLabels = initData.proto_labels || [];
+    const initialProtoValues = initData.proto_values || [];
+    const initialRiskValues = initData.risk_values || [];
+    const initialDeviceRiskValues = initData.device_risk_values || [0, 0, 0];
 
-  const charts = [];
-  // 1. Daily Traffic Usage
-  charts.push(new Chart(document.getElementById("trafficChart"), {
-    type: "line",
-    data: {
-      labels: {{ traffic_labels|tojson }},
-      datasets: [{
-        label: "Bytes",
-        data: {{ traffic_values|tojson }},
-        borderColor: "#38bdf8",
-        backgroundColor: "rgba(56, 189, 248, 0.12)",
-        borderWidth: 2,
-        fill: true,
-        tension: 0.3,
-        pointRadius: 4
-      }]
-    },
-    options: {
-      responsive: true,
-      scales: {
-        y: {
-          beginAtZero: true
-        }
-      }
+    // Configure global Chart.js dark defaults
+    if (typeof Chart !== "undefined") {
+        Chart.defaults.color = "#94a3b8";
+        Chart.defaults.borderColor = "rgba(36, 51, 84, 0.6)";
+        Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
     }
-  }));
 
-  // 2. Protocol Usage
-  charts.push(new Chart(document.getElementById("protoChart"), {
-    type: "doughnut",
-    data: {
-      labels: {{ proto_labels|tojson }},
-      datasets: [{
-        data: {{ proto_values|tojson }},
-        backgroundColor: [
-          "#38bdf8",
-          "#a78bfa",
-          "#f59e0b",
-          "#94a3b8",
-          "#34d399"
-        ],
-        borderWidth: 1
-      }]
-    },
-    options: {
-      responsive: true,
-      plugins: {
-        legend: {
-          position: "top"
-        }
-      }
-    }
-  }));
+    const charts = [];
 
-  // 3. Historical Alert Severity Distribution
-  charts.push(new Chart(document.getElementById("riskChart"), {
-    type: "bar",
-    data: {
-      labels: ["Low", "Medium", "High", "Critical"],
-      datasets: [{
-        label: "Alerts",
-        data: {{ risk_values|tojson }},
-        backgroundColor: [
-          "#16a34a",
-          "#eab308",
-          "#ea580c",
-          "#dc2626"
-        ],
-        borderRadius: 6
-      }]
-    },
-    options: {
-      responsive: true,
-      scales: {
-        y: {
-          beginAtZero: true,
-          ticks: {
-            precision: 0
-          }
-        }
-      }
-    }
-  }));
-
-  // 4. Current Device Risk Levels
-  charts.push(new Chart(document.getElementById("deviceRiskChart"), {
-    type: "bar",
-    data: {
-      labels: ["Low", "Medium", "High"],
-      datasets: [{
-        label: "Devices",
-        data: {{ device_risk_values|default([0, 0, 0])|tojson }},
-        backgroundColor: [
-          "#16a34a",
-          "#eab308",
-          "#dc2626"
-        ],
-        borderRadius: 6,
-        maxBarThickness: 90
-      }]
-    },
-options: {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {
-        legend: {
-            display: false
-        }
-    },
-    scales: {
-        y: {
-            beginAtZero: true,
-            ticks: {
-                precision: 0,
-                stepSize: 1
+    // 1. Daily Traffic Usage
+    const trafficCtx = document.getElementById("trafficChart");
+    if (trafficCtx) {
+        charts.push(new Chart(trafficCtx, {
+            type: "line",
+            data: {
+                labels: initialTrafficLabels,
+                datasets: [{
+                    label: "Bandwidth (Bytes)",
+                    data: initialTrafficValues,
+                    borderColor: "#06b6d4",
+                    backgroundColor: "rgba(6, 182, 212, 0.12)",
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.35,
+                    pointBackgroundColor: "#06b6d4",
+                    pointRadius: 4,
+                    pointHoverRadius: 6
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: "rgba(36, 51, 84, 0.4)" }
+                    },
+                    x: {
+                        grid: { color: "rgba(36, 51, 84, 0.4)" }
+                    }
+                }
             }
+        }));
+    }
+
+    // 2. Protocol Usage
+    const protoCtx = document.getElementById("protoChart");
+    if (protoCtx) {
+        charts.push(new Chart(protoCtx, {
+            type: "doughnut",
+            data: {
+                labels: initialProtoLabels,
+                datasets: [{
+                    data: initialProtoValues,
+                    backgroundColor: [
+                        "#06b6d4",
+                        "#3b82f6",
+                        "#a855f7",
+                        "#f59e0b",
+                        "#10b981"
+                    ],
+                    borderColor: "#182238",
+                    borderWidth: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: "right",
+                        labels: { boxWidth: 12, padding: 14 }
+                    }
+                }
+            }
+        }));
+    }
+
+    // 3. Historical Alert Severity Distribution
+    const riskCtx = document.getElementById("riskChart");
+    if (riskCtx) {
+        charts.push(new Chart(riskCtx, {
+            type: "bar",
+            data: {
+                labels: ["Low", "Medium", "High", "Critical"],
+                datasets: [{
+                    label: "Alerts",
+                    data: initialRiskValues,
+                    backgroundColor: [
+                        "#10b981",
+                        "#f59e0b",
+                        "#ef4444",
+                        "#dc2626"
+                    ],
+                    borderRadius: 6
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: { precision: 0 }
+                    }
+                }
+            }
+        }));
+    }
+
+    // 4. Current Device Risk Levels
+    const devRiskCtx = document.getElementById("deviceRiskChart");
+    if (devRiskCtx) {
+        charts.push(new Chart(devRiskCtx, {
+            type: "bar",
+            data: {
+                labels: ["Low Risk (0–39)", "Medium Risk (40–69)", "High Risk (70–100)"],
+                datasets: [{
+                    label: "Devices",
+                    data: initialDeviceRiskValues,
+                    backgroundColor: [
+                        "#10b981",
+                        "#f59e0b",
+                        "#ef4444"
+                    ],
+                    borderRadius: 6,
+                    maxBarThickness: 75
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: { precision: 0, stepSize: 1 }
+                    }
+                }
+            }
+        }));
+    }
+
+    async function refreshAnalytics() {
+        if (document.hidden || (typeof isLiveFeedPaused === "function" && isLiveFeedPaused())) return;
+        try {
+            const response = await fetch("/api/analytics", { cache: "no-store" });
+            if (!response.ok) throw new Error("Analytics unavailable");
+            const data = await response.json();
+            const labels = [
+                data.traffic_labels,
+                data.proto_labels,
+                ["Low", "Medium", "High", "Critical"],
+                ["Low Risk (0–39)", "Medium Risk (40–69)", "High Risk (70–100)"]
+            ];
+            const values = [
+                data.traffic_values,
+                data.proto_values,
+                data.risk_values,
+                data.device_risk_values
+            ];
+
+            charts.forEach((chart, i) => {
+                if (chart && labels[i] && values[i]) {
+                    chart.data.labels = labels[i];
+                    chart.data.datasets[0].data = values[i];
+                    chart.update();
+                }
+            });
+
+            const statusEl = document.getElementById("analytics-status");
+            if (statusEl) statusEl.textContent = `Live (${new Date().toLocaleTimeString()})`;
+
+        } catch (error) {
+            console.error("Analytics refresh notice:", error);
         }
     }
-}
-  }));
 
-  async function refreshAnalytics() {
-    if (document.hidden) return;
-    try {
-      const response = await fetch("/api/analytics", {cache: "no-store"});
-      if (!response.ok) throw new Error("Analytics unavailable");
-      const data = await response.json();
-      const labels = [data.traffic_labels, data.proto_labels, ["Low","Medium","High","Critical"], ["Low","Medium","High"]];
-      const values = [data.traffic_values, data.proto_values, data.risk_values, data.device_risk_values];
-      charts.forEach((chart, i) => {
-        chart.data.labels = labels[i];
-        chart.data.datasets[0].data = values[i];
-        chart.update();
-      });
-    } catch (error) { console.error(error); }
-  }
-  setInterval(refreshAnalytics, 5000);
+    setInterval(refreshAnalytics, 5000);
 });
 </script>
-
 {% endblock %}

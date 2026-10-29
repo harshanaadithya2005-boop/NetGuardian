@@ -89,6 +89,122 @@ async function requestJSON(url, options = {}) {
 
 
 // ========================================================
+// ========================================================
+// 2b. Global Navigation, Admin Drawer & AI Modal Controls
+// ========================================================
+
+let liveFeedPaused = false;
+
+function toggleMobileNav() {
+    const nav = document.getElementById("main-navigation");
+    if (nav) nav.classList.toggle("open");
+}
+
+function toggleAdminDrawer(forceOpen) {
+    const drawer = document.getElementById("admin-drawer");
+    const backdrop = document.getElementById("drawer-backdrop");
+    if (!drawer || !backdrop) return;
+    const shouldOpen = typeof forceOpen === "boolean" ? forceOpen : !drawer.classList.contains("open");
+    if (shouldOpen) {
+        drawer.classList.add("open");
+        backdrop.classList.add("open");
+    } else {
+        drawer.classList.remove("open");
+        backdrop.classList.remove("open");
+    }
+}
+
+function toggleLiveFeed() {
+    liveFeedPaused = !liveFeedPaused;
+    const btn = document.getElementById("live-stream-btn");
+    const label = document.getElementById("live-stream-label");
+    if (btn && label) {
+        if (liveFeedPaused) {
+            btn.classList.add("btn-danger");
+            btn.classList.remove("btn-outline");
+            btn.innerHTML = '<i class="fa-solid fa-play"></i> <span id="live-stream-label">Paused</span>';
+            showToast("Live telemetry polling paused.");
+        } else {
+            btn.classList.remove("btn-danger");
+            btn.classList.add("btn-outline");
+            btn.innerHTML = '<i class="fa-solid fa-pause"></i> <span id="live-stream-label">Live</span>';
+            showToast("Live telemetry polling resumed.");
+            refreshLiveDashboardData();
+        }
+    }
+}
+
+function isLiveFeedPaused() {
+    return liveFeedPaused;
+}
+
+let activeAiModalAlertId = null;
+
+async function openAiExplainModal(alertId) {
+    activeAiModalAlertId = alertId;
+    const dialog = document.getElementById("ai-explain-modal");
+    const backdrop = document.getElementById("ai-explain-modal-backdrop");
+    const loading = document.getElementById("ai-modal-loading");
+    const content = document.getElementById("ai-modal-content");
+    const resolveBtn = document.getElementById("ai-modal-resolve-btn");
+
+    if (!dialog || !backdrop) return;
+
+    dialog.showModal();
+    backdrop.classList.add("open");
+    loading.style.display = "block";
+    content.style.display = "none";
+    if (resolveBtn) {
+        resolveBtn.style.display = "none";
+        resolveBtn.onclick = async () => {
+            await resolveAlert(alertId);
+            closeAiModal();
+        };
+    }
+
+    try {
+        const res = await fetch(`/api/alerts/${alertId}/explain`);
+        let data;
+        if (res.ok) {
+            data = await res.json();
+        } else {
+            const htmlText = await (await fetch(`/alerts/${alertId}/explain`)).text();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(htmlText, "text/html");
+            const paragraphs = doc.querySelectorAll(".panel p, .ai-text, p");
+            data = {
+                summary: paragraphs[1]?.textContent || "Security alert logged.",
+                recommendation: paragraphs[2]?.textContent || "Investigate the affected device.",
+                source: "Built-in"
+            };
+        }
+
+        document.getElementById("ai-modal-type").textContent = (data.alert_type || "ALERT").replace(/_/g, " ").toUpperCase();
+        document.getElementById("ai-modal-severity").textContent = (data.severity || "MEDIUM").toUpperCase();
+        document.getElementById("ai-modal-severity").className = `badge badge-${(data.severity || "warning").toLowerCase()}`;
+        document.getElementById("ai-modal-host").textContent = `Host: ${data.ip_address || "Unknown"}`;
+        document.getElementById("ai-modal-source").textContent = `Source: ${data.source || "Deterministic"}`;
+        document.getElementById("ai-modal-summary").textContent = data.summary || "No summary available.";
+        document.getElementById("ai-modal-recommendation").textContent = data.recommendation || "No recommendation available.";
+
+        loading.style.display = "none";
+        content.style.display = "block";
+        if (resolveBtn) resolveBtn.style.display = "inline-flex";
+
+    } catch (err) {
+        loading.innerHTML = `<p class="text-danger"><i class="fa-solid fa-triangle-exclamation"></i> Failed to generate explanation: ${err.message}</p>`;
+    }
+}
+
+function closeAiModal() {
+    const dialog = document.getElementById("ai-explain-modal");
+    const backdrop = document.getElementById("ai-explain-modal-backdrop");
+    if (dialog && dialog.open) dialog.close();
+    if (backdrop) backdrop.classList.remove("open");
+    activeAiModalAlertId = null;
+}
+
+
 // 3. Active Network Discovery
 // ========================================================
 
@@ -133,7 +249,7 @@ async function toggleTrust(deviceId, trusted) {
                     "Content-Type": "application/json"
                 },
                 body: JSON.stringify({
-                    trusted: Boolean(trusted)
+                    trusted: Boolean(Number(trusted))
                 })
             }
         );
@@ -515,7 +631,32 @@ function createAlertElement(alert) {
     content.appendChild(deviceInfo);
     item.appendChild(content);
 
-    // Resolve action for open alerts
+    // Actions for alerts
+    const alertId = Number(alert.id);
+    if (Number.isSafeInteger(alertId) && alertId > 0) {
+        const actions = createElement("div", "action-buttons");
+        actions.style.marginLeft = "auto";
+        actions.style.flexShrink = "0";
+
+        const explainBtn = createElement("button", "btn btn-sm btn-outline");
+        explainBtn.type = "button";
+        explainBtn.title = "AI Incident Investigation";
+        explainBtn.innerHTML = '<i class="fa-solid fa-brain text-accent"></i>';
+        explainBtn.addEventListener("click", () => openAiExplainModal(alertId));
+        actions.appendChild(explainBtn);
+
+        if (String(alert.status || "").toLowerCase() === "open") {
+            const button = createElement("button", "btn btn-sm btn-resolve");
+            button.type = "button";
+            button.title = "Resolve alert";
+            button.innerHTML = '<i class="fa-solid fa-check"></i>';
+            button.addEventListener("click", () => resolveAlert(alertId));
+            actions.appendChild(button);
+        }
+        item.appendChild(actions);
+    }
+
+    return item;
     if (
         String(alert.status || "").toLowerCase() === "open"
     ) {
@@ -804,7 +945,7 @@ async function updateLiveTraffic() {
 // ========================================================
 
 function refreshLiveDashboardData() {
-    if (document.hidden) {
+    if (document.hidden || isLiveFeedPaused()) {
         return;
     }
 

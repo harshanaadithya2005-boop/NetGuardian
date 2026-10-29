@@ -1,293 +1,227 @@
-
 {% extends "base.html" %}
 
 {% block content %}
+<section class="card">
+    <div class="panel-header">
+        <div>
+            <h2><i class="fa-solid fa-bell text-accent"></i> Security Alerts & Threat Incidents</h2>
+            <p class="panel-subtitle">Review, triage, and investigate multi-vector intrusion alerts and behavioural anomalies.</p>
+        </div>
+        <div class="toolbar-right">
+            <span class="badge badge-info" id="alerts-count-total">{{ alerts|length }} Total</span>
+            <span class="badge badge-warning" id="alerts-count-open">
+                {{ alerts|selectattr('status', 'equalto', 'open')|list|length }} Open
+            </span>
+            <span class="badge badge-danger">
+                {{ alerts|selectattr('severity', 'in', ['CRITICAL', 'HIGH'])|list|length }} High/Critical
+            </span>
+            <form method="POST" action="/alerts/reset" onsubmit="return confirm('Clear existing alerts from the active view? Historical database records will be preserved.');" style="display:inline;">
+                <button type="submit" class="btn btn-sm btn-outline-danger">
+                    <i class="fa-solid fa-rotate-left"></i> Reset Active View
+                </button>
+            </form>
+        </div>
+    </div>
 
-<style>
-    .ng-alerts-panel {
-        margin-top: 20px;
-        padding: 20px;
-        background: #172238;
-        border: 1px solid #293852;
-        border-radius: 10px;
-    }
+    <!-- Alert Triage Toolbar -->
+    <div class="table-toolbar">
+        <div class="toolbar-left">
+            <div class="search-input-wrap">
+                <i class="fa-solid fa-magnifying-glass"></i>
+                <input type="text" id="alerts-search" class="search-input" placeholder="Search alerts by IP, type, evidence..." oninput="handleAlertFilter()">
+            </div>
 
-    .ng-alerts-table-wrap {
-        width: 100%;
-        overflow-x: auto;
-    }
+            <div class="filter-group" id="severity-filters">
+                <button type="button" class="filter-chip active" data-value="all" onclick="setAlertFilter('severity', 'all')">All Severity</button>
+                <button type="button" class="filter-chip" data-value="critical" onclick="setAlertFilter('severity', 'critical')">Critical</button>
+                <button type="button" class="filter-chip" data-value="high" onclick="setAlertFilter('severity', 'high')">High</button>
+                <button type="button" class="filter-chip" data-value="medium" onclick="setAlertFilter('severity', 'medium')">Medium</button>
+                <button type="button" class="filter-chip" data-value="low" onclick="setAlertFilter('severity', 'low')">Low</button>
+            </div>
 
-    .ng-alerts-table {
-        width: 100%;
-        border-collapse: collapse;
-        min-width: 900px;
-        color: #e2e8f0;
-        font-size: 13px;
-    }
+            <div class="filter-group" id="status-filters">
+                <button type="button" class="filter-chip active" data-value="all" onclick="setAlertFilter('status', 'all')">All Status</button>
+                <button type="button" class="filter-chip" data-value="open" onclick="setAlertFilter('status', 'open')">Open</button>
+                <button type="button" class="filter-chip" data-value="resolved" onclick="setAlertFilter('status', 'resolved')">Resolved</button>
+                <button type="button" class="filter-chip" data-value="ignored" onclick="setAlertFilter('status', 'ignored')">Ignored</button>
+            </div>
+        </div>
 
-    .ng-alerts-table th {
-        text-align: left;
-        padding: 14px 12px;
-        background: #101a2d;
-        color: #93a9c6;
-        font-weight: 600;
-        white-space: nowrap;
-        border-bottom: 1px solid #34445f;
-    }
+        <div class="toolbar-right">
+            <span class="subtext" id="alerts-filter-status">Showing {{ alerts|length }} alerts</span>
+        </div>
+    </div>
 
-    .ng-alerts-table td {
-        padding: 13px 12px;
-        border-bottom: 1px solid #293852;
-        vertical-align: middle;
-    }
-
-    .ng-alerts-table tbody tr:hover {
-        background: rgba(56, 189, 248, 0.05);
-    }
-
-    .ng-alert-type {
-        font-weight: 600;
-        color: #e2e8f0;
-        text-transform: uppercase;
-        white-space: nowrap;
-    }
-
-    .ng-alert-ip {
-        font-family: monospace;
-        color: #38bdf8;
-        white-space: nowrap;
-    }
-
-    .ng-alert-severity {
-        display: inline-block;
-        padding: 5px 9px;
-        border-radius: 5px;
-        font-size: 11px;
-        font-weight: 700;
-        text-transform: uppercase;
-    }
-
-    .ng-alert-severity.low {
-        color: #4ade80;
-        background: rgba(34, 197, 94, 0.13);
-    }
-
-    .ng-alert-severity.medium,
-    .ng-alert-severity.warning {
-        color: #fbbf24;
-        background: rgba(245, 158, 11, 0.13);
-    }
-
-    .ng-alert-severity.high,
-    .ng-alert-severity.critical {
-        color: #fb7185;
-        background: rgba(239, 68, 68, 0.13);
-    }
-
-    .ng-alert-status-form {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-    }
-
-    .ng-alert-status-select {
-        padding: 7px 10px;
-        border: 1px solid #34445f;
-        border-radius: 5px;
-        background: #101a2d;
-        color: #f8fafc;
-        font-size: 12px;
-        cursor: pointer;
-    }
-
-    .ng-alert-button {
-        display: inline-block;
-        padding: 8px 12px;
-        background: #123851;
-        color: #67e8f9;
-        border: 1px solid #1b5974;
-        border-radius: 5px;
-        font-size: 12px;
-        font-weight: 600;
-        text-decoration: none;
-        cursor: pointer;
-        white-space: nowrap;
-    }
-
-    .ng-alert-button:hover {
-        background: #1b4e6b;
-        color: #ffffff;
-    }
-
-    .ng-alert-time {
-        color: #94a3b8;
-        white-space: nowrap;
-        font-size: 12px;
-    }
-
-    .ng-alert-summary {
-        margin-bottom: 16px;
-        color: #94a3b8;
-        font-size: 13px;
-    }
-
-    .ng-alert-resolved {
-        opacity: 0.7;
-    }
-
-    .ng-alert-empty {
-        text-align: center;
-        padding: 30px;
-        color: #94a3b8;
-    }
-</style>
-
-<h2>
-    <i class="fa-solid fa-bell"></i>
-    Security Alerts
-</h2>
-
-
-<div style="display: flex; justify-content: flex-end; margin: 15px 0;">
-    <form method="POST"
-          action="/alerts/reset"
-          onsubmit="return confirm('Clear existing alerts from the active view? Historical records will be preserved.');">
-
-        <button type="submit"
-                style="background: #dc2626;
-                       color: white;
-                       padding: 10px 18px;
-                       border: none;
-                       border-radius: 6px;
-                       font-weight: 600;
-                       cursor: pointer;">
-
-            <i class="fa-solid fa-rotate-left"></i>
-            Reset Alerts
-        </button>
-
-    </form>
-</div>
-
-
-<section class="ng-alerts-panel">
-
-    <p class="ng-alert-summary">
-        Security alert history and investigation records.
-        Review individual alerts before resolving or ignoring them.
-    </p>
-
-    <div class="ng-alerts-table-wrap">
-
-        <table class="ng-alerts-table">
-
+    <!-- Alerts Table -->
+    <div class="table-responsive">
+        <table class="data-table" id="alerts-table">
             <thead>
                 <tr>
                     <th>Alert Type</th>
-                    <th>Device IP</th>
-                    <th>Risk</th>
+                    <th>Device IP / Host</th>
+                    <th>Risk Score</th>
                     <th>Severity</th>
                     <th>Status</th>
                     <th>Detected Time</th>
-                    <th>AI Explanation</th>
+                    <th>Investigation</th>
                 </tr>
             </thead>
-
-            <tbody>
-
+            <tbody id="alerts-table-body">
                 {% for a in alerts %}
-
-                <tr class="{% if a['status'] != 'open' %}ng-alert-resolved{% endif %}">
-
+                <tr id="alert-row-{{ a['id'] }}"
+                    class="alert-row {{ 'row-resolved' if a['status'] != 'open' else '' }}"
+                    data-severity="{{ a['severity']|lower }}"
+                    data-status="{{ a['status']|lower }}"
+                    data-search="{{ (a['alert_type'] ~ ' ' ~ a['ip_address'] ~ ' ' ~ (a['description'] or ''))|lower }}">
                     <td>
-                        <span class="ng-alert-type">
-                            {{ a['alert_type']|replace('_', ' ') }}
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <i class="fa-solid {{ 'fa-skull text-danger' if a['severity'] == 'CRITICAL' else ('fa-triangle-exclamation text-warning' if a['severity'] == 'HIGH' else 'fa-circle-exclamation text-accent') }}"></i>
+                            <span class="mono" style="font-weight: 700;">{{ a['alert_type']|replace('_', ' ')|upper }}</span>
+                        </div>
+                        {% if a['description'] %}
+                        <div class="subtext" style="margin-top: 4px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ a['description'] }}">
+                            {{ a['description'] }}
+                        </div>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <code>{{ a['ip_address'] or 'Unknown' }}</code>
+                        {% if a['device_id'] %}
+                        <div class="subtext">
+                            <a href="/device/{{ a['device_id'] }}" class="device-link"><i class="fa-solid fa-server"></i> Device #{{ a['device_id'] }}</a>
+                        </div>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <span class="risk-number {{ 'text-danger' if a['risk_score'] >= 70 else ('text-warning' if a['risk_score'] >= 40 else 'text-success') }}">
+                            {{ a['risk_score'] }}/100
                         </span>
                     </td>
-
                     <td>
-                        <span class="ng-alert-ip">
-                            {{ a['ip_address'] or 'Unknown' }}
-                        </span>
-                    </td>
-
-                    <td>
-                        <strong>{{ a['risk_score'] }}</strong>
-                    </td>
-
-                    <td>
-                        <span class="ng-alert-severity {{ a['severity']|lower }}">
+                        <span class="badge badge-{{ a['severity']|lower }}">
                             {{ a['severity'] }}
                         </span>
                     </td>
-
                     <td>
-                        <form
-                            method="post"
-                            action="/alerts/{{ a['id'] }}/status"
-                            class="ng-alert-status-form"
-                        >
-
-                            <select
-                                name="status"
-                                class="ng-alert-status-select"
-                                aria-label="Status for alert {{ a['id'] }}"
-                            >
-
+                        <div style="display: inline-flex; align-items: center; gap: 6px;">
+                            <select class="form-input" style="padding: 4px 8px; font-size: 12px; width: auto;"
+                                    data-alert-id="{{ a['id'] }}"
+                                    onchange="changeAlertStatus(this.dataset.alertId, this.value)"
+                                    aria-label="Status for alert {{ a['id'] }}">
                                 {% for s in ['open', 'resolved', 'ignored'] %}
-
-                                <option
-                                    value="{{ s }}"
-                                    {% if a['status'] == s %}selected{% endif %}
-                                >
+                                <option value="{{ s }}" {{ 'selected' if a['status'] == s else '' }}>
                                     {{ s|title }}
                                 </option>
-
                                 {% endfor %}
-
                             </select>
-
-                            <button type="submit" class="ng-alert-button">
-                                Save
+                        </div>
+                    </td>
+                    <td>
+                        <span class="subtext">{{ a['timestamp'] }}</span>
+                    </td>
+                    <td>
+                        <div class="action-buttons">
+                            <button type="button" class="btn btn-sm btn-outline" data-alert-id="{{ a['id'] }}" onclick="openAiExplainModal(this.dataset.alertId)" title="Open AI Investigation Modal">
+                                <i class="fa-solid fa-brain text-accent"></i> AI Explain
                             </button>
-
-                        </form>
+                            <a href="/alerts/{{ a['id'] }}/explain" class="btn btn-sm btn-outline" title="Open detailed report in new page">
+                                <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                            </a>
+                        </div>
                     </td>
-
-                    <td>
-                        <span class="ng-alert-time">
-                            {{ a['timestamp'] }}
-                        </span>
-                    </td>
-
-                    <td>
-                        <a
-                            href="/alerts/{{ a['id'] }}/explain"
-                            class="ng-alert-button"
-                        >
-                            <i class="fa-solid fa-brain"></i>
-                            Explain
-                        </a>
-                    </td>
-
                 </tr>
-
                 {% else %}
-
-                <tr>
-                    <td colspan="7" class="ng-alert-empty">
-                        No security alerts found.
+                <tr id="alerts-empty-row">
+                    <td colspan="7" class="empty-state">
+                        <i class="fa-solid fa-shield-heart empty-icon"></i>
+                        <p>No active security threats detected. Network is clean.</p>
                     </td>
                 </tr>
-
                 {% endfor %}
-
             </tbody>
-
         </table>
-
     </div>
-
 </section>
 
+<script>
+let alertFilters = {
+    severity: "all",
+    status: "all",
+    search: ""
+};
+
+function handleAlertFilter() {
+    const input = document.getElementById("alerts-search");
+    alertFilters.search = (input?.value || "").toLowerCase().trim();
+    applyAlertFilters();
+}
+
+function setAlertFilter(type, value) {
+    alertFilters[type] = value;
+    const group = document.getElementById(`${type}-filters`);
+    if (group) {
+        group.querySelectorAll(".filter-chip").forEach(btn => {
+            btn.classList.toggle("active", btn.dataset.value === value);
+        });
+    }
+    applyAlertFilters();
+}
+
+function applyAlertFilters() {
+    const rows = document.querySelectorAll("#alerts-table-body tr.alert-row");
+    let visibleCount = 0;
+
+    rows.forEach(row => {
+        const rowSeverity = row.dataset.severity;
+        const rowStatus = row.dataset.status;
+        const rowSearch = row.dataset.search;
+
+        const matchesSeverity = alertFilters.severity === "all" || rowSeverity === alertFilters.severity;
+        const matchesStatus = alertFilters.status === "all" || rowStatus === alertFilters.status;
+        const matchesSearch = !alertFilters.search || rowSearch.includes(alertFilters.search);
+
+        if (matchesSeverity && matchesStatus && matchesSearch) {
+            row.style.display = "";
+            visibleCount++;
+        } else {
+            row.style.display = "none";
+        }
+    });
+
+    const statusEl = document.getElementById("alerts-filter-status");
+    if (statusEl) {
+        statusEl.textContent = `Showing ${visibleCount} of ${rows.length} alerts`;
+    }
+}
+
+async function changeAlertStatus(alertId, newStatus) {
+    try {
+        const response = await fetch(`/alerts/${alertId}/status`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "X-Requested-With": "XMLHttpRequest"
+            },
+            body: JSON.stringify({ status: newStatus })
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const row = document.getElementById(`alert-row-${alertId}`);
+        if (row) {
+            row.dataset.status = newStatus;
+            row.classList.toggle("row-resolved", newStatus !== "open");
+        }
+
+        showToast(`Alert #${alertId} updated to ${newStatus}.`);
+        applyAlertFilters();
+
+    } catch (err) {
+        showToast(`Failed to update alert: ${err.message}`, true);
+    }
+}
+</script>
 {% endblock %}

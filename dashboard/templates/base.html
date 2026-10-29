@@ -10,58 +10,147 @@
 <body data-protection-mode="{{ protection_mode }}">
     <header class="navbar">
         <div class="nav-brand">
-            <i class="fa-solid fa-shield-halved brand-icon"></i>
-            <div class="brand-text">
-                <span class="brand-title">NetGuardian</span>
-                <span class="brand-subtitle">Behavioural Fingerprinting & Manual Quarantine</span>
-            </div>
+            <a href="/" class="brand-link">
+                <i class="fa-solid fa-shield-halved brand-icon"></i>
+                <div class="brand-text">
+                    <span class="brand-title">NetGuardian</span>
+                    <span class="brand-subtitle">Autonomous Behavioral NIDS</span>
+                </div>
+            </a>
         </div>
 
-        <!-- Member 3: Dashboard Navigation -->
-<nav class="member3-navigation"
-     aria-label="Main navigation"
-     style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
-            <a href="/">Dashboard</a>
-            <a href="/devices">Devices</a>
-            <a href="/alerts">Alerts</a>
-            <a href="/analytics">Analytics</a>
-            <a href="/reports">Reports</a>
-            <a href="/threat-detection">Threat Detection</a>
-            <a href="/viva-lab">Viva Lab</a>
+        <button class="nav-toggle" id="nav-toggle" onclick="toggleMobileNav()" aria-label="Toggle navigation menu">
+            <i class="fa-solid fa-bars"></i>
+        </button>
+
+        <nav class="main-navigation" id="main-navigation" aria-label="Main navigation">
+            <a href="/" class="nav-link {{ 'active' if request.path == '/' else '' }}">
+                <i class="fa-solid fa-gauge-high"></i> <span>Dashboard</span>
+            </a>
+            <a href="/devices" class="nav-link {{ 'active' if request.path.startswith('/device') else '' }}">
+                <i class="fa-solid fa-server"></i> <span>Devices</span>
+            </a>
+            <a href="/alerts" class="nav-link {{ 'active' if request.path.startswith('/alerts') else '' }}">
+                <i class="fa-solid fa-bell"></i> <span>Alerts</span>
+            </a>
+            <a href="/analytics" class="nav-link {{ 'active' if request.path == '/analytics' else '' }}">
+                <i class="fa-solid fa-chart-line"></i> <span>Analytics</span>
+            </a>
+            <a href="/reports" class="nav-link {{ 'active' if request.path.startswith('/reports') else '' }}">
+                <i class="fa-solid fa-file-shield"></i> <span>Reports</span>
+            </a>
+            <a href="/threat-detection" class="nav-link {{ 'active' if request.path == '/threat-detection' else '' }}">
+                <i class="fa-solid fa-shield-virus"></i> <span>Threat Detection</span>
+            </a>
+            <a href="/viva-lab" class="nav-link {{ 'active' if request.path == '/viva-lab' else '' }}">
+                <i class="fa-solid fa-flask-vial"></i> <span>Viva Lab</span>
+            </a>
         </nav>
 
         <div class="nav-status">
-            <span class="pulse-indicator"></span>
-            <span id="engine-status" class="status-label">Capture: checking…</span>
-            <button class="btn btn-outline" onclick="triggerDiscovery()"><i class="fa-solid fa-radar"></i> Scan Network</button>
+            <div class="engine-indicator-pill" title="Live Packet Sniffer Health">
+                <span class="pulse-indicator"></span>
+                <span id="engine-status" class="status-label">Capture: checking…</span>
+            </div>
+            <button class="btn btn-sm btn-outline" id="live-stream-btn" onclick="toggleLiveFeed()" title="Pause/Resume live updates">
+                <i class="fa-solid fa-pause"></i> <span id="live-stream-label">Live</span>
+            </button>
+            <button class="btn btn-sm btn-outline" onclick="triggerDiscovery()" title="Initiate ARP sweep">
+                <i class="fa-solid fa-radar"></i> <span>Scan</span>
+            </button>
+            <button class="btn btn-sm btn-admin-mode" id="admin-drawer-toggle" onclick="toggleAdminDrawer(true)" title="Configure Administrator & Protection Mode">
+                <i class="fa-solid fa-sliders"></i> <span class="mode-text">{{ protection_mode }}</span>
+            </button>
         </div>
     </header>
 
-    <main class="container">
-        <p class="badge badge-info">{{ protection_mode }} protection · Automatic quarantine disabled · {% if protection_mode == 'DEMO' %}Demo markers do not block Wi-Fi{% else %}Router enforcement requires manual administrator confirmation{% endif %}</p>
-        <details class="card" id="router-admin-panel">
-            <summary>Router quarantine administrator</summary>
-            <p id="router-admin-status">Checking administrator session...</p>
-            <p id="router-admin-feedback" role="status"></p>
-            <form id="router-admin-login">
-                <label>NetGuardian administrator password <input type="password" name="password" autocomplete="current-password" maxlength="256" required></label>
-                <button type="submit" class="btn btn-outline">Sign in</button>
-                <button type="button" class="btn btn-outline" id="router-admin-logout">Sign out</button>
-            </form>
-            <div class="action-buttons">
-                <button type="button" class="btn btn-danger" id="mode-live" disabled>Enable manual LIVE mode</button>
-                <button type="button" class="btn btn-outline" id="mode-demo" disabled>Return to DEMO mode</button>
+    <!-- Slide-out Admin Drawer -->
+    <div class="drawer-backdrop" id="drawer-backdrop" onclick="toggleAdminDrawer(false)"></div>
+    <aside class="admin-drawer" id="admin-drawer" aria-label="Administrator and Mode Control">
+        <div class="drawer-header">
+            <h3><i class="fa-solid fa-user-shield"></i> Security Administration</h3>
+            <button type="button" class="btn-icon drawer-close" onclick="toggleAdminDrawer(false)" aria-label="Close drawer">&times;</button>
+        </div>
+        <div class="drawer-content">
+            <div class="card drawer-card" id="router-admin-panel">
+                <div class="panel-header">
+                    <h4><i class="fa-solid fa-shield"></i> Protection & Router Mode</h4>
+                </div>
+                <p id="router-admin-status" class="subtext">Checking administrator session...</p>
+                <p id="router-admin-feedback" class="alert-feedback" role="status"></p>
+                <form id="router-admin-login" class="drawer-form">
+                    <label>Administrator Password
+                        <input type="password" name="password" class="form-input" autocomplete="current-password" maxlength="256" placeholder="Enter password" required>
+                    </label>
+                    <div class="drawer-form-actions">
+                        <button type="submit" class="btn btn-sm btn-outline">Sign in</button>
+                        <button type="button" class="btn btn-sm btn-outline" id="router-admin-logout">Sign out</button>
+                    </div>
+                </form>
+                <div class="action-buttons mt-20">
+                    <button type="button" class="btn btn-sm btn-danger" id="mode-live" disabled>Enable manual LIVE mode</button>
+                    <button type="button" class="btn btn-sm btn-outline" id="mode-demo" disabled>Return to DEMO mode</button>
+                </div>
+                <p id="mode-outstanding" class="subtext mt-20" role="status"></p>
+                <div class="drawer-notes mt-20">
+                    <p><small>Mode changes make no router writes. DEMO prevents new LIVE blocks; existing router blocks require Release. LIVE release and recovery remain available in DEMO. Each application restart starts in DEMO.</small></p>
+                    <p><small>Router credentials stay on the server. Signing in does not authorize a router configuration change.</small></p>
+                </div>
             </div>
-            <p id="mode-outstanding" role="status"></p>
-            <p>Mode changes make no router writes. DEMO prevents new LIVE blocks; existing router blocks require Release. LIVE release and recovery remain available in DEMO. Each application restart starts in DEMO.</p>
-            <p>Router credentials stay on the server. Signing in does not authorize a router configuration change.</p>
-        </details>
+        </div>
+    </aside>
+
+    <main class="container">
+        <div class="protection-status-bar">
+            <span class="badge badge-info">
+                <i class="fa-solid fa-shield"></i> {{ protection_mode }} Protection Active
+            </span>
+            <span class="status-subtext">Automatic quarantine disabled &bull; {% if protection_mode == 'DEMO' %}Demo markers do not block physical Wi-Fi{% else %}Router enforcement requires manual confirmation{% endif %}</span>
+        </div>
+
         {% block content %}{% endblock %}
     </main>
 
     <footer class="footer">
         <p>NetGuardian &bull; Member 1 (Networking) &bull; Member 2 (Detection & Risk) &bull; Member 3 (Platform & Dashboard)</p>
     </footer>
+
+    <!-- Global AI Alert Investigation Modal -->
+    <div class="modal-backdrop" id="ai-explain-modal-backdrop" onclick="closeAiModal()"></div>
+    <dialog class="modal-dialog" id="ai-explain-modal" aria-labelledby="ai-modal-title">
+        <div class="modal-header">
+            <h3 id="ai-modal-title"><i class="fa-solid fa-brain text-accent"></i> AI Security Incident Investigation</h3>
+            <button type="button" class="btn-icon" onclick="closeAiModal()" aria-label="Close modal">&times;</button>
+        </div>
+        <div class="modal-body" id="ai-modal-body">
+            <div class="modal-loading" id="ai-modal-loading">
+                <i class="fa-solid fa-circle-notch fa-spin text-accent"></i>
+                <p>Analyzing telemetry and generating security explanation...</p>
+            </div>
+            <div id="ai-modal-content" style="display:none;">
+                <div class="ai-alert-banner">
+                    <span id="ai-modal-type" class="badge badge-danger">PORT SCAN</span>
+                    <span id="ai-modal-severity" class="badge badge-warning">HIGH</span>
+                    <span id="ai-modal-host" class="mono text-accent">Host: 192.168.1.86</span>
+                    <span id="ai-modal-source" class="source-tag">Source: Gemini AI</span>
+                </div>
+                <div class="ai-section mt-20">
+                    <h4><i class="fa-solid fa-file-waveform"></i> Technical Analysis</h4>
+                    <p id="ai-modal-summary" class="ai-text"></p>
+                </div>
+                <div class="ai-section mt-20">
+                    <h4><i class="fa-solid fa-clipboard-check"></i> Recommended Remediation</h4>
+                    <p id="ai-modal-recommendation" class="ai-text"></p>
+                </div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button type="button" class="btn btn-outline" onclick="closeAiModal()">Close</button>
+            <button type="button" class="btn btn-success" id="ai-modal-resolve-btn" style="display:none;">
+                <i class="fa-solid fa-check"></i> Mark Resolved
+            </button>
+        </div>
+    </dialog>
 
     <div id="toast" class="toast hidden"></div>
     <dialog id="router-confirm-dialog" aria-labelledby="router-confirm-title">
@@ -72,6 +161,7 @@
             <button type="submit" value="approve" class="btn btn-danger">Approve exact action</button>
         </form>
     </dialog>
+
     <script src="/static/js/dashboard.js"></script>
     <script src="/static/js/router-controls.js"></script>
     {% block scripts %}{% endblock %}

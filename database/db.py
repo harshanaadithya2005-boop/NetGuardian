@@ -32,6 +32,9 @@ def get_connection(custom_path=None):
     connection.row_factory = sqlite3.Row
     # Enable SQLite foreign key enforcement
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA journal_mode = WAL")
+    connection.execute("PRAGMA synchronous = NORMAL")
+    connection.execute("PRAGMA busy_timeout = 5000")
     return connection
 
 

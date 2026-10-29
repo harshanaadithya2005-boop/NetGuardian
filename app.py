@@ -26,7 +26,8 @@ if (
     and Path(sys.executable).resolve() != venv_python.resolve()
 ):
     try:
-        import flask, scapy, requests, dotenv, reportlab
+        for _pkg in ("flask", "scapy", "requests", "dotenv", "reportlab"):
+            __import__(_pkg)
     except ImportError:
         import subprocess
         proc = subprocess.run(
@@ -39,7 +40,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from router.huawei_client import HuaweiRouterClient
-from router.router_sync import sync_connected_wifi_devices
+# router sync imported in monitor_wifi_devices
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
@@ -265,6 +266,7 @@ def get_verified_local_devices():
 # ---------------------------------------------------------
 
 @app.route("/alerts/<int:alert_id>/explain")
+@app.route("/api/alerts/<int:alert_id>/explain")
 def explain(alert_id):
     """Generate or retrieve an AI explanation for a security alert."""
 
@@ -326,6 +328,18 @@ def explain(alert_id):
 
             conn.commit()
 
+        if request.path.startswith("/api/") or request.headers.get("Accept") == "application/json":
+            return jsonify({
+                "status": "success",
+                "summary": summary,
+                "recommendation": recommendation,
+                "source": source,
+                "alert_type": alert["alert_type"],
+                "severity": alert["severity"],
+                "ip_address": alert["ip_address"],
+                "risk_score": alert["risk_score"]
+            })
+
         return render_template(
             "explain.html",
             alert=alert,
@@ -377,9 +391,11 @@ def alerts_page():
 def update_alert_status(alert_id):
 
     allowed_statuses = {"open", "resolved", "ignored"}
-    new_status = request.form.get(
-        "status", ""
-    ).strip().lower()
+    json_data = request.get_json(silent=True) or {}
+    new_status = (request.form.get("status") or json_data.get("status") or "").strip().lower()
+    # validate status
+    # parsed from form or json
+    pass
 
     if new_status not in allowed_statuses:
         return "Invalid alert status", 400
@@ -405,6 +421,8 @@ def update_alert_status(alert_id):
     finally:
         conn.close()
 
+    if request.is_json or request.headers.get("Accept") == "application/json" or request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return jsonify(status="success", message=f"Alert {alert_id} status updated to {new_status}.")
     return redirect("/alerts")
 
 
@@ -456,6 +474,8 @@ def reset_alerts():
     finally:
         conn.close()
 
+    if request.is_json or request.headers.get("Accept") == "application/json" or request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return jsonify(status="success", message="All alerts archived successfully.")
     return redirect("/alerts")
 
 
@@ -655,6 +675,48 @@ def export_alerts_csv():
         headers={
             "Content-Disposition":
                 "attachment; filename=netguardian_alerts.csv"
+        }
+    )
+
+
+@app.route("/reports/devices.csv")
+def export_devices_csv():
+    devices = get_verified_local_devices()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Device ID",
+        "Device Name",
+        "Hostname",
+        "IP Address",
+        "MAC Address",
+        "Device Type",
+        "Status",
+        "Trusted",
+        "Risk Score",
+        "First Seen",
+        "Last Seen"
+    ])
+    for d in devices:
+        writer.writerow([
+            d["id"],
+            d["device_name"] or "",
+            d["hostname"] or "",
+            d["ip_address"] or "",
+            d["mac_address"] or "",
+            d["device_type"] or "",
+            d["status"] or "",
+            "Yes" if d["trusted"] else "No",
+            d["risk_score"] or 0,
+            d["first_seen"] or "",
+            d["last_seen"] or ""
+        ])
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={
+            "Content-Disposition":
+                "attachment; filename=netguardian_devices.csv"
         }
     )
 

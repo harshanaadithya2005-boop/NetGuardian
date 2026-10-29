@@ -41,7 +41,7 @@ def main():
     checks = [([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"], "unittest")]
     with tempfile.TemporaryDirectory(prefix="netguardian_tests_", dir=ROOT/".test-work") as temp:
         for name in LEGACY:
-            checks.append(([sys.executable, "-c", BOOT, str(Path(temp)/(name+'.db')), str(ROOT/('test_'+name+'.py'))], name))
+            checks.append(([sys.executable, "-c", BOOT, str(Path(temp)/(name+'.db')), str(ROOT/'tests_legacy'/('test_'+name+'.py'))], name))
         failed = []
         for args, name in checks:
             try:
