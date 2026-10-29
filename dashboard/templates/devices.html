@@ -100,7 +100,7 @@
                     <td>
                         <div class="risk-bar-container">
                             <div class="risk-bar {{ 'risk-high' if (d.risk_score or 0) >= 70 else ('risk-medium' if (d.risk_score or 0) >= 40 else 'risk-low') }}"
-                                 style="width: {{ [d.risk_score or 0, 10]|max }}%;"></div>
+                                 {{ ('style="width: ' ~ ([d.risk_score or 0, 10]|max) ~ '%;"')|safe }}></div>
                         </div>
                         <span class="risk-number {{ 'text-danger' if (d.risk_score or 0) >= 70 else ('text-warning' if (d.risk_score or 0) >= 40 else 'text-success') }}">
                             {{ d.risk_score or 0 }}/100

@@ -128,7 +128,7 @@
                         <td>
                             <div class="risk-bar-container">
                                 <div class="risk-bar {{ 'risk-high' if dev.risk_score >= 70 else ('risk-medium' if dev.risk_score >= 40 else 'risk-low') }}" 
-                                     style="width: {{ [dev.risk_score, 10]|max }}%;">
+                                     {{ ('style="width: ' ~ ([dev.risk_score or 0, 10]|max) ~ '%;"')|safe }}>
                                 </div>
                             </div>
                             <span class="risk-number {{ 'text-danger' if dev.risk_score >= 70 else ('text-warning' if dev.risk_score >= 40 else 'text-success') }}">
